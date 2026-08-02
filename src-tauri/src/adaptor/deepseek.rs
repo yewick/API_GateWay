@@ -1,0 +1,91 @@
+use async_trait::async_trait;
+use super::*;
+
+pub struct DeepSeekAdaptor;
+
+#[async_trait]
+impl Adaptor for DeepSeekAdaptor {
+    fn channel_type(&self) -> &'static str { "deepseek" }
+    fn default_models(&self) -> Vec<&'static str> {
+        vec!["deepseek-v4-flash", "deepseek-v4-pro"]
+    }
+    fn default_base_url(&self) -> &str { "https://api.deepseek.com/v1" }
+
+    async fn test(&self, config: &ChannelConfig) -> Result<TestResult, anyhow::Error> {
+        let start = std::time::Instant::now();
+        // 用 GET /models 接口测连通性，成本最低（该接口只读，支持 GET）
+        let url = format!("{}/models", config.base_url.trim_end_matches('/'));
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", config.api_key))
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await;
+
+        match resp {
+            Ok(r) => {
+                let latency = start.elapsed().as_millis() as u64;
+                if r.status().is_success() {
+                    Ok(TestResult { success: true, message: "连接成功".to_string(), latency_ms: latency })
+                } else {
+                    let status = r.status();
+                    let body = r.text().await.unwrap_or_default();
+                    Ok(TestResult {
+                        success: false,
+                        message: format!("HTTP {}: {}", status, body.chars().take(200).collect::<String>()),
+                        latency_ms: latency,
+                    })
+                }
+            }
+            Err(e) => Ok(TestResult {
+                success: false,
+                message: format!("连接失败: {}", e),
+                latency_ms: start.elapsed().as_millis() as u64,
+            }),
+        }
+    }
+
+    async fn forward(
+        &self,
+        request: &ProxyRequest,
+        config: &ChannelConfig,
+    ) -> Result<(u16, serde_json::Value, Option<TokenUsage>), anyhow::Error> {
+        let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+        let body = super::openai::apply_model_mapping(&request.body, &config.model_mapping);
+        let client = reqwest::Client::new();
+        let resp = client.post(&url)
+            .header("Authorization", format!("Bearer {}", config.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+        let status = resp.status().as_u16();
+        let json: serde_json::Value = resp.json().await?;
+        let usage = json.get("usage").map(|u| TokenUsage {
+            prompt_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            completion_tokens: u.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        });
+        Ok((status, json, usage))
+    }
+
+    async fn forward_stream(
+        &self,
+        request: &ProxyRequest,
+        config: &ChannelConfig,
+    ) -> Result<reqwest::Response, anyhow::Error> {
+        let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+        let mut body = super::openai::apply_model_mapping(&request.body, &config.model_mapping);
+        body["stream"] = serde_json::Value::Bool(true);
+        let client = reqwest::Client::new();
+        let resp = client.post(&url)
+            .header("Authorization", format!("Bearer {}", config.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+        Ok(resp)
+    }
+}

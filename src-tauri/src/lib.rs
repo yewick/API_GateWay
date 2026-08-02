@@ -1,4 +1,7 @@
+mod adaptor;
+mod commands;
 mod db;
+mod utils;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -22,7 +25,12 @@ fn greet(name: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            commands::channel::get_channels,
+            commands::channel::create_channel,
+            commands::channel::test_channel,
+        ])
         .setup(|app| {
             let handle = app.handle().clone();
 

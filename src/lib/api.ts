@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./invoke-adapter";
 import type { Channel, CreateChannelInput, UpdateChannelInput, TestChannelResult,
   ApiKey, CreateApiKeyInput, RequestLog, LogStats, DashboardStats, Settings } from "../types";
 

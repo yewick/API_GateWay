@@ -1,0 +1,40 @@
+import { useQuery } from "@tanstack/react-query";
+import { logApi } from "../lib/api";
+
+export interface LogFilters {
+  keyword?: string;
+  channel_name?: string;
+  model?: string;
+  status_code?: number;
+  start_date?: string;
+  end_date?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export const logKeys = {
+  all: ["logs"] as const,
+  filtered: (filters: LogFilters) => ["logs", filters] as const,
+  detail: (id: string) => ["logs", id] as const,
+  stats: (days?: number) => ["log-stats", days ?? 30] as const,
+};
+
+export const useLogs = (filters: LogFilters) =>
+  useQuery({
+    queryKey: logKeys.filtered(filters),
+    queryFn: () => logApi.getAll(filters),
+    placeholderData: (prev) => prev, // 切换筛选条件时保留旧数据，避免闪烁
+  });
+
+export const useLog = (id: string | null) =>
+  useQuery({
+    queryKey: logKeys.detail(id ?? ""),
+    queryFn: () => logApi.get(id ?? ""),
+    enabled: !!id,
+  });
+
+export const useLogStats = (days = 30) =>
+  useQuery({
+    queryKey: logKeys.stats(days),
+    queryFn: () => logApi.getStats(days),
+  });

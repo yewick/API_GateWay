@@ -2,24 +2,30 @@ import { useEffect } from "react";
 import "./App.css";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Layout } from "./components/layout/Layout";
+import { ToastProvider } from "./components/ui/Toast";
 import { DashboardPage } from "./pages/DashboardPage";
 import { ChannelsPage } from "./pages/ChannelsPage";
 import { ApiKeysPage } from "./pages/ApiKeysPage";
 import { LogsPage } from "./pages/LogsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { UsagePage } from "./pages/UsagePage";
-import { settingsApi } from "./lib/api";
+import { useThemeStore } from "./stores/themeStore";
+import { useSettingsStore } from "./stores/settingsStore";
 
 function App() {
+  const setTheme = useThemeStore((s) => s.setTheme);
+  const loadSettings = useSettingsStore((s) => s.loadSettings);
+
+  // 初始化主题与设置
   useEffect(() => {
-    settingsApi.get().then((settings) => {
-      document.documentElement.setAttribute("data-theme", settings.ui_theme || "dark");
-      document.documentElement.lang = settings.ui_language || "zh-CN";
-    }).catch(() => {});
-  }, []);
+    const stored = useThemeStore.getState().theme;
+    setTheme(stored);
+    loadSettings();
+  }, [setTheme, loadSettings]);
 
   return (
     <BrowserRouter>
+      <ToastProvider />
       <Layout>
         <Routes>
           <Route path="/" element={<DashboardPage />} />

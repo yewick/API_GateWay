@@ -212,4 +212,24 @@ impl Repository {
             active_channels,
         })
     }
+
+    pub async fn update_channel_test_result(
+        &self,
+        id: &str,
+        success: bool,
+    ) -> Result<(), sqlx::Error> {
+        let now = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
+        sqlx::query(
+            "UPDATE channels SET last_test_at = ?, last_test_ok = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(&now)
+        .bind(success as i64)
+        .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
