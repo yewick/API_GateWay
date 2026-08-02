@@ -26,3 +26,57 @@ src/
 ├── main.tsx                  # 入口文件
 └── App.css                   # 应用样式
 ```
+
+# 后端工程化结构
+```
+src-tauri/
+├── src/
+│   ├── lib.rs              # 库入口（Tauri Builder 配置）
+│   ├── main.rs             # 主入口
+│   ├── adaptor/            # 渠道适配器（策略模式）
+│   │   ├── mod.rs          # Adaptor trait + 工厂函数
+│   │   ├── openai.rs       # OpenAI 适配器
+│   │   ├── claude.rs       # Claude 适配器
+│   │   ├── gemini.rs       # Gemini 适配器
+│   │   ├── deepseek.rs     # DeepSeek 适配器
+│   │   └── custom.rs       # 自定义渠道适配器
+│   ├── commands/           # Tauri 命令层（前端调用入口）
+│   │   ├── mod.rs
+│   │   ├── channel.rs      # 渠道 CRUD 命令
+│   │   ├── api_key.rs      # 密钥 CRUD 命令
+│   │   ├── log.rs          # 日志查询命令
+│   │   ├── stats.rs        # 统计命令
+│   │   ├── settings.rs     # 设置命令
+│   │   ├── server.rs       # 服务器状态命令
+│   │   ├── security.rs     # 安全规则命令
+│   │   └── import_export.rs # 导入导出命令
+│   ├── core/               # 核心业务逻辑
+│   │   ├── mod.rs
+│   │   ├── dispatcher.rs   # 负载均衡调度器
+│   │   ├── proxy.rs        # API 转发代理
+│   │   └── security/       # 安全审计（子模块）
+│   ├── db/                 # 数据层
+│   │   ├── mod.rs          # Database 连接池
+│   │   ├── models.rs       # 数据模型定义
+│   │   └── repository.rs   # 数据仓库（CRUD）
+│   ├── security/           # 安全审计引擎
+│   │   ├── mod.rs          # 安全类型定义 + 策略模式
+│   │   ├── scanner.rs      # 风险扫描器
+│   │   ├── redact.rs       # 数据脱敏
+│   │   └── rules.rs        # 安全规则管理
+│   ├── server/             # HTTP 服务器
+│   │   ├── mod.rs          # 服务器启动
+│   │   ├── router.rs       # 路由定义
+│   │   └── handlers.rs     # 请求处理器
+│   └── utils/              # 工具函数
+│       ├── id.rs           # ID 生成
+│       └── time.rs         # 时间工具
+├── migrations/             # 数据库迁移
+│   ├── 001_init.sql        # 初始建表
+│   ├── 002_add_request_body.sql
+│   ├── 003_security_audit.sql
+│   └── 004_security_rules.sql
+├── Cargo.toml              # Rust 依赖配置
+├── tauri.conf.json         # Tauri 应用配置
+└── build.rs                # 构建脚本
+```
