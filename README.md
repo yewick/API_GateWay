@@ -85,7 +85,7 @@ src-tauri/
 - 优先级：高到低
 - 组内权重：按比例分配
 
-```
+```javascript
 请求 gpt-4o
    │
    ↓ 过滤：状态启用 且 支持该模型
@@ -99,4 +99,4 @@ src-tauri/
 [OpenAI-A/B(随机序), OpenAI-B/A, DeepSeek, Zhipu]
    │
    ↓ Proxy 层按顺序尝试，直到成功或耗尽
-```javascript
+```
