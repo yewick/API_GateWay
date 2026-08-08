@@ -17,6 +17,10 @@ export const REAL_COMMANDS = new Set<string>([
   "get_channels",
   "create_channel",
   "test_channel",
+  "get_api_keys",
+  "create_api_key",
+  "update_api_key",
+  "delete_api_key",
 ]);
 
 // 环境检测：是否运行在 Tauri WebView 中
@@ -25,14 +29,38 @@ const isTauri = (): boolean => {
 };
 
 // ---------- 转换层 ----------
-// Rust 后端的 Channel 将 models/config/model_mapping 以 JSON 字符串返回，
-// 这里将其转换为前端期望的类型化结构。反向（前端 → 后端）在 create_channel 时处理。
+// Rust 后端的 Channel / ApiKey 将 JSON 数组字段以字符串返回，
+// 这里将其转换为前端期望的类型化结构。反向（前端 → 后端）在 create 命令时处理。
+
+// ApiKey 的 allowed_models / allowed_channels 为 JSON 字符串 → 解析为数组
+const transformApiKeyFromBackend = (raw: any): any => {
+  const parseJson = (s: unknown, fallback: unknown) => {
+    if (s == null) return fallback;
+    try {
+      return typeof s === "string" ? JSON.parse(s) : s;
+    } catch {
+      return fallback;
+    }
+  };
+  return {
+    ...raw,
+    allowed_models: parseJson(raw.allowed_models, []) as string[],
+    allowed_channels: parseJson(raw.allowed_channels, []) as string[],
+  };
+};
+
 const transformResponse = <T>(cmd: string, data: T): T => {
   if (cmd === "get_channels") {
     return (Array.isArray(data) ? data.map(transformChannelFromBackend) : data) as T;
   }
   if (cmd === "create_channel") {
     return transformChannelFromBackend(data) as T;
+  }
+  if (cmd === "get_api_keys") {
+    return (Array.isArray(data) ? data.map(transformApiKeyFromBackend) : data) as T;
+  }
+  if (cmd === "create_api_key") {
+    return transformApiKeyFromBackend(data) as T;
   }
   // Rust 后端 TestResult 使用 message 字段，前端类型为 error_message，此处做字段映射
   if (cmd === "test_channel" && data && typeof data === "object") {

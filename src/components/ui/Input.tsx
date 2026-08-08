@@ -50,6 +50,9 @@ export function Input(props: Props) {
     field = (
       <textarea
         {...(rest as TextareaHTMLAttributes<HTMLTextAreaElement>)}
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
         className={`${baseField} resize-y min-h-[80px] ${rest.className ?? ""}`}
       />
     );
@@ -68,6 +71,9 @@ export function Input(props: Props) {
         <input
           {...(rest as InputHTMLAttributes<HTMLInputElement>)}
           type={effectiveType}
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
           className={`${baseField} ${
             isPassword ? "pr-10" : ""
           } ${rest.className ?? ""}`}

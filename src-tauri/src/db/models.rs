@@ -108,3 +108,18 @@ pub struct UpdateChannelInput {
     pub config: Option<serde_json::Value>,
     pub model_mapping: Option<serde_json::Value>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateApiKeyInput {
+    pub name: String,
+    pub allowed_models: Vec<String>,
+    pub allowed_channels: Vec<String>,
+    pub quota_limit: Option<i64>,
+    pub expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateApiKeyInput {
+    pub id: String,
+    pub status: i64,
+}

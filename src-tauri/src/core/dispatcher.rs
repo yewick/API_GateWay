@@ -6,6 +6,9 @@ pub struct Dispatcher;
 impl Dispatcher {
     /// 根据优先级、权重、模型支持度，构建有序的故障转移队列
     pub fn select_channels(channels: &[Channel], requested_model: &str) -> Vec<Channel> {
+        // 模型名统一转小写比较，避免用户输入大小写不一致导致匹配失败
+        let model_lower = requested_model.to_lowercase();
+
         // ── 第一步：过滤候选渠道 ─────────────────────────────
         let mut candidates: Vec<Channel> = channels
             .iter()
@@ -16,14 +19,14 @@ impl Dispatcher {
                 }
                 // 2. 模型匹配：models 列表为空表示支持所有模型
                 let models: Vec<String> = serde_json::from_str(&c.models).unwrap_or_default();
-                if models.is_empty() || models.iter().any(|m| m == requested_model) {
+                if models.is_empty() || models.iter().any(|m| m.to_lowercase() == model_lower) {
                     return true;
                 }
                 // 3. 模型映射的 key 也算支持（映射名是面向下游的模型名）
                 let mapping: serde_json::Value = serde_json::from_str(&c.model_mapping)
                     .unwrap_or(serde_json::Value::Object(Default::default()));
                 if let Some(obj) = mapping.as_object() {
-                    return obj.contains_key(requested_model);
+                    return obj.keys().any(|k| k.to_lowercase() == model_lower);
                 }
                 false
             })

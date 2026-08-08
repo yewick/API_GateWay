@@ -232,4 +232,152 @@ impl Repository {
         .await?;
         Ok(())
     }
+
+    /// 写入一条请求日志
+    pub async fn create_log(&self, log: &RequestLog) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO request_logs
+               (id, seq, api_key_id, api_key_name, channel_id, channel_name, model, upstream_model,
+                mode, status_code, prompt_tokens, completion_tokens, total_tokens, duration_ms,
+                error_message, is_stream, is_retry, created_at, request_body,
+                risk_level, risk_score, risk_summary, security_action, sanitized, blocked_reason)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&log.id)
+        .bind(log.seq)
+        .bind(&log.api_key_id)
+        .bind(&log.api_key_name)
+        .bind(&log.channel_id)
+        .bind(&log.channel_name)
+        .bind(&log.model)
+        .bind(&log.upstream_model)
+        .bind(&log.mode)
+        .bind(log.status_code)
+        .bind(log.prompt_tokens)
+        .bind(log.completion_tokens)
+        .bind(log.total_tokens)
+        .bind(log.duration_ms)
+        .bind(&log.error_message)
+        .bind(log.is_stream)
+        .bind(log.is_retry)
+        .bind(&log.created_at)
+        .bind(&log.request_body)
+        .bind(&log.risk_level)
+        .bind(log.risk_score)
+        .bind(&log.risk_summary)
+        .bind(&log.security_action)
+        .bind(log.sanitized)
+        .bind(&log.blocked_reason)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 写入安全风险明细
+    pub async fn create_security_findings(
+        &self,
+        log_id: &str,
+        findings: &[crate::security::Finding],
+        action: &str,
+    ) -> Result<(), sqlx::Error> {
+        let now = now_iso();
+        for f in findings {
+            sqlx::query(
+                "INSERT INTO security_findings (log_id, rule, severity, detail, action, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(log_id)
+            .bind(&f.rule)
+            .bind(&f.severity)
+            .bind(&f.detail)
+            .bind(action)
+            .bind(&now)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// 配额扣减：增加已用 token
+    pub async fn increment_quota(
+        &self,
+        api_key_id: &str,
+        tokens: i64,
+    ) -> Result<(), sqlx::Error> {
+        let now = now_iso();
+        sqlx::query(
+            "UPDATE api_keys SET quota_used = quota_used + ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(tokens)
+        .bind(&now)
+        .bind(api_key_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    // ===== API Key CRUD =====
+
+    /// 生成 sk-yeapi-{32位hex} 格式密钥
+    fn generate_api_key() -> String {
+        format!("sk-yeapi-{}", uuid::Uuid::new_v4().simple())
+    }
+
+    /// 列出全部密钥（新在前）
+    pub async fn get_all_api_keys(&self) -> Result<Vec<ApiKey>, sqlx::Error> {
+        sqlx::query_as::<_, ApiKey>(
+            "SELECT * FROM api_keys ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// 创建密钥（生成 sk-yeapi-* 格式，默认启用）
+    pub async fn create_api_key(
+        &self,
+        input: &CreateApiKeyInput,
+    ) -> Result<ApiKey, sqlx::Error> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let key = Self::generate_api_key();
+        let now = now_iso();
+        sqlx::query(
+            "INSERT INTO api_keys
+               (id, name, key, status, allowed_models, allowed_channels,
+                quota_limit, quota_used, expires_at, created_at, updated_at)
+             VALUES (?, ?, ?, 1, ?, ?, ?, 0, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(&input.name)
+        .bind(&key)
+        .bind(serde_json::to_string(&input.allowed_models).unwrap_or_else(|_| "[]".to_string()))
+        .bind(serde_json::to_string(&input.allowed_channels).unwrap_or_else(|_| "[]".to_string()))
+        .bind(input.quota_limit.unwrap_or(-1))
+        .bind(&input.expires_at)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        self.get_api_key_by_key(&key).await
+    }
+
+    /// 启用/禁用密钥
+    pub async fn update_api_key(&self, id: &str, status: i64) -> Result<(), sqlx::Error> {
+        let now = now_iso();
+        sqlx::query("UPDATE api_keys SET status = ?, updated_at = ? WHERE id = ?")
+            .bind(status)
+            .bind(&now)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 删除密钥
+    pub async fn delete_api_key(&self, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM api_keys WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
