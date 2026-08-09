@@ -19,7 +19,7 @@ export function ServiceConfigTab() {
           type="number"
           value={String(settings.server_port)}
           onChange={(e) =>
-            updateSettings({ server_port: parseInt(e.target.value, 10) || 8000 })
+            updateSettings({ server_port: parseInt(e.target.value, 10) || 8777 }) // 默认端口 8777
           }
           hint="网关 HTTP 服务监听端口"
         />

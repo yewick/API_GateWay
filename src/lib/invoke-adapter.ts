@@ -1,15 +1,15 @@
 // ===== Invoke 适配器 =====
-// 在 Tauri invoke 与 Mock 数据之间分发命令调用。
+// 在 Tauri invoke 与空数据回退之间分发命令调用。
 //
 // 架构：
 //   - REAL_COMMANDS 集合中的命令 → 真实 Tauri 后端
-//   - 其余命令 → mock-data.ts 中的内存数据
-//   - 浏览器开发模式（无 window.__TAURI_INTERNALS__）→ 全部走 Mock
+//   - 其余命令 → 空数据回退（无假数据）
+//   - 浏览器开发模式（无 window.__TAURI_INTERNALS__）→ 空数据回退
 //
-// 当后端某个命令上线后，将其名称添加到 REAL_COMMANDS，即可从 Mock 无缝切换到真实后端。
+// 当后端某个命令上线后，将其名称添加到 REAL_COMMANDS，即可从空数据回退切换到真实后端。
 
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
-import { mockHandlers, transformChannelFromBackend } from "./mock-data";
+import { DEFAULT_SETTINGS } from "./constants";
 
 // 当前已注册到 Rust 后端的真实命令
 export const REAL_COMMANDS = new Set<string>([
@@ -31,6 +31,24 @@ const isTauri = (): boolean => {
 // ---------- 转换层 ----------
 // Rust 后端的 Channel / ApiKey 将 JSON 数组字段以字符串返回，
 // 这里将其转换为前端期望的类型化结构。反向（前端 → 后端）在 create 命令时处理。
+
+// 将后端返回的 Channel（JSON 字符串字段）转换为前端类型
+const transformChannelFromBackend = (raw: any): any => {
+  const parseJson = (s: unknown, fallback: unknown) => {
+    if (s == null) return fallback;
+    try {
+      return typeof s === "string" ? JSON.parse(s) : s;
+    } catch {
+      return fallback;
+    }
+  };
+  return {
+    ...raw,
+    models: parseJson(raw.models, []) as string[],
+    config: parseJson(raw.config, {}) as Record<string, unknown>,
+    model_mapping: parseJson(raw.model_mapping, {}) as Record<string, string>,
+  };
+};
 
 // ApiKey 的 allowed_models / allowed_channels 为 JSON 字符串 → 解析为数组
 const transformApiKeyFromBackend = (raw: any): any => {
@@ -78,6 +96,53 @@ const transformResponse = <T>(cmd: string, data: T): T => {
 // 保留此钩子以便未来字段结构变化时在此处转换。
 const serializeRequest = (_cmd: string, args: any): any => args;
 
+// ---------- 空数据回退 ----------
+// 当后端不可用（浏览器模式或命令未注册到后端）时，
+// 返回空数据而非 Mock 假数据，让 UI 展示"暂无数据"等空状态。
+
+const emptyFallback = (cmd: string): Promise<any> => {
+  // 列表类 → 空数组
+  if (
+    cmd === "get_channels" ||
+    cmd === "get_api_keys" ||
+    cmd === "get_logs" ||
+    cmd === "get_log_stats"
+  ) {
+    return Promise.resolve([]);
+  }
+  // 单条类 → null
+  if (cmd === "get_channel" || cmd === "get_log") {
+    return Promise.resolve(null);
+  }
+  // 仪表盘统计 → 零值
+  if (cmd === "get_dashboard_stats") {
+    return Promise.resolve({
+      today_requests: 0,
+      today_total_tokens: 0,
+      active_channels: 0,
+      avg_latency_ms: 0,
+      total_channels: 0,
+      total_api_keys: 0,
+      total_requests: 0,
+      total_tokens: 0,
+    });
+  }
+  // 设置 → 默认值
+  if (cmd === "get_settings") {
+    return Promise.resolve({ ...DEFAULT_SETTINGS });
+  }
+  // 测试 → 不可用
+  if (cmd === "test_channel") {
+    return Promise.resolve({
+      success: false,
+      latency_ms: 0,
+      error_message: "Backend not available",
+    });
+  }
+  // 写入/删除等 → void
+  return Promise.resolve(undefined);
+};
+
 export const addRealCommand = (cmd: string) => {
   REAL_COMMANDS.add(cmd);
 };
@@ -87,29 +152,19 @@ export const removeRealCommand = (cmd: string) => {
 };
 
 export const invoke = <T>(cmd: string, args?: unknown): Promise<T> => {
-  // 浏览器模式：所有命令走 Mock
+  // 浏览器模式：回退到空数据
   if (!isTauri()) {
-    const handler = mockHandlers[cmd];
-    if (!handler) {
-      console.warn(`[invoke-adapter] 未知命令 ${cmd}，无 Mock 处理器，返回 null`);
-      return Promise.resolve(null as T);
-    }
-    return handler(args);
+    return emptyFallback(cmd);
   }
 
-  // Tauri 模式：真实命令走后端，其余走 Mock
+  // Tauri 模式：真实命令走后端，其余回退到空数据
   if (REAL_COMMANDS.has(cmd)) {
     return tauriInvoke<T>(cmd, serializeRequest(cmd, args)).then((data) =>
       transformResponse<T>(cmd, data),
     );
   }
 
-  const handler = mockHandlers[cmd];
-  if (!handler) {
-    console.warn(`[invoke-adapter] 命令 ${cmd} 未注册到后端，且无 Mock 处理器`);
-    return Promise.resolve(null as T);
-  }
-  return handler(args);
+  return emptyFallback(cmd);
 };
 
 export { tauriInvoke };

@@ -130,7 +130,7 @@ mod tests {
     fn test_filter_by_model() {
         let channels = vec![
             mock_channel("a", 1, 1, r#"["gpt-4o"]"#),
-            mock_channel("b", 1, 1, r#"["deepseek-chat"]"#),
+            mock_channel("b", 1, 1, r#"["deepseek-v4-flash"]"#),
         ];
         let selected = Dispatcher::select_channels(&channels, "gpt-4o");
         assert_eq!(selected.len(), 1);

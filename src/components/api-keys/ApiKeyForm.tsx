@@ -170,7 +170,7 @@ export function ApiKeyForm({ open, onClose }: ApiKeyFormProps) {
             label="允许的模型"
             value={form.allowed_models}
             onChange={(e) => set("allowed_models", e.target.value)}
-            placeholder="gpt-4o, deepseek-chat"
+            placeholder="gpt-4o, deepseek-v4-flash"
             hint="留空则允许所有模型，逗号分隔"
           />
 

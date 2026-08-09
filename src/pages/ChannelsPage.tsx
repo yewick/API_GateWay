@@ -11,6 +11,7 @@ import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { ChannelForm } from "../components/channels/ChannelForm";
 import { ChannelTestButton } from "../components/channels/ChannelTestButton";
 import { getChannelType, formatTime } from "../lib/constants";
+import { Tooltip } from "../components/ui/Tooltip";
 import { toast } from "../lib/toast";
 
 export const ChannelsPage = () => {
@@ -85,7 +86,11 @@ export const ChannelsPage = () => {
       key: "base_url",
       title: "Base URL",
       render: (v) => (
-        <code className="text-xs mono text-text-secondary break-all">{String(v)}</code>
+        <Tooltip content={<code className="text-xs mono break-all">{String(v)}</code>}>
+          <code className="text-xs mono text-text-secondary truncate block max-w-[180px] cursor-default">
+            {String(v)}
+          </code>
+        </Tooltip>
       ),
     },
     {

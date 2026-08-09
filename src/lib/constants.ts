@@ -132,7 +132,7 @@ export const LANGUAGES = [
 
 // 默认设置
 export const DEFAULT_SETTINGS = {
-  server_port: 8000,
+  server_port: 8777, // 默认端口 8777
   server_host: "127.0.0.1",
   ui_theme: "dark",
   ui_language: "zh-CN",
@@ -166,5 +166,4 @@ export const formatTime = (iso: string | null | undefined): string => {
 };
 
 // 数字格式化（千分位）
-export const formatNumber = (n: number): string =>
-  n.toLocaleString("zh-CN");
+export const formatNumber = (n: number): string => n.toLocaleString("zh-CN");
