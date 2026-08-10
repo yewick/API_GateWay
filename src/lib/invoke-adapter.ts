@@ -14,13 +14,29 @@ import { DEFAULT_SETTINGS } from "./constants";
 // 当前已注册到 Rust 后端的真实命令
 export const REAL_COMMANDS = new Set<string>([
   "greet",
+  // 渠道
   "get_channels",
   "create_channel",
   "test_channel",
+  "get_channel",
+  "update_channel",
+  "toggle_channel",
+  "delete_channel",
+  // 密钥
   "get_api_keys",
   "create_api_key",
   "update_api_key",
   "delete_api_key",
+  // 日志
+  "get_logs",
+  "get_log",
+  "delete_log",
+  "get_log_stats",
+  // 仪表盘
+  "get_dashboard_stats",
+  // 设置
+  "get_settings",
+  "save_settings",
 ]);
 
 // 环境检测：是否运行在 Tauri WebView 中
@@ -80,6 +96,13 @@ const transformResponse = <T>(cmd: string, data: T): T => {
   if (cmd === "create_api_key") {
     return transformApiKeyFromBackend(data) as T;
   }
+  // is_stream / is_retry 为 i64 → boolean
+  if (cmd === "get_logs" && Array.isArray(data)) {
+    return data.map(transformLogFromBackend) as T;
+  }
+  if (cmd === "get_log" && data && typeof data === "object") {
+    return transformLogFromBackend(data) as T;
+  }
   // Rust 后端 TestResult 使用 message 字段，前端类型为 error_message，此处做字段映射
   if (cmd === "test_channel" && data && typeof data === "object") {
     const d = data as Record<string, unknown>;
@@ -89,6 +112,15 @@ const transformResponse = <T>(cmd: string, data: T): T => {
     }
   }
   return data;
+};
+
+// RequestLog: is_stream / is_retry 转换为布尔值
+const transformLogFromBackend = (raw: any): any => {
+  return {
+    ...raw,
+    is_stream: raw.is_stream === 1 || raw.is_stream === true,
+    is_retry: raw.is_retry === 1 || raw.is_retry === true,
+  };
 };
 
 // ---------- 序列化层 ----------

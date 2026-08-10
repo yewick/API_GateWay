@@ -79,6 +79,7 @@ export interface Settings {
   retry_times: number;
   security_enabled: boolean;
   security_mode: string;
+  security_scan_request: boolean;
   security_scan_unicode: boolean;
   security_scan_tools: boolean;
   security_scan_network: boolean;

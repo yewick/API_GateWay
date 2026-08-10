@@ -71,8 +71,19 @@ pub struct RequestLog {
 pub struct DashboardStats {
     pub today_requests: i64,
     pub today_total_tokens: i64,
-    pub total_channels: i64,
     pub active_channels: i64,
+    pub avg_latency_ms: i64,
+    pub total_channels: i64,
+    pub total_api_keys: i64,
+    pub total_requests: i64,
+    pub total_tokens: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct LogStats {
+    pub date: String,
+    pub requests: i64,
+    pub tokens: i64,
 }
 
 pub fn now_iso() -> String {

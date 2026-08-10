@@ -31,13 +31,29 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             greet,
+            // 渠道
             commands::channel::get_channels,
             commands::channel::create_channel,
             commands::channel::test_channel,
+            commands::channel::toggle_channel,
+            commands::channel::delete_channel,
+            commands::channel::get_channel,
+            commands::channel::update_channel,
+            // 密钥
             commands::api_key::get_api_keys,
             commands::api_key::create_api_key,
             commands::api_key::update_api_key,
             commands::api_key::delete_api_key,
+            // 日志
+            commands::logs::get_logs,
+            commands::logs::get_log,
+            commands::logs::delete_log,
+            commands::logs::get_log_stats,
+            // 仪表盘
+            commands::dashboard::get_dashboard_stats,
+            // 设置
+            commands::settings::get_settings,
+            commands::settings::save_settings,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

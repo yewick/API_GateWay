@@ -143,6 +143,7 @@ export const DEFAULT_SETTINGS = {
   retry_times: 3,
   security_enabled: true,
   security_mode: "audit",
+  security_scan_request: true,
   security_scan_unicode: false,
   security_scan_tools: true,
   security_scan_network: true,

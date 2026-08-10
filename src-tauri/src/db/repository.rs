@@ -134,6 +134,12 @@ impl Repository {
         keyword: Option<&str>,
         channel_name: Option<&str>,
         model: Option<&str>,
+        mode: Option<&str>,
+        status_code: Option<i64>,
+        is_stream: Option<i64>,
+        is_retry: Option<i64>,
+        risk_level: Option<&str>,
+        security_action: Option<&str>,
         date_from: Option<&str>,
         date_to: Option<&str>,
         limit: i64,
@@ -157,6 +163,24 @@ impl Repository {
         if let Some(m) = model {
             q.push(" AND model = ").push_bind(m);
         }
+        if let Some(mode_val) = mode {
+            q.push(" AND mode = ").push_bind(mode_val);
+        }
+        if let Some(sc) = status_code {
+            q.push(" AND status_code = ").push_bind(sc);
+        }
+        if let Some(s) = is_stream {
+            q.push(" AND is_stream = ").push_bind(s);
+        }
+        if let Some(r) = is_retry {
+            q.push(" AND is_retry = ").push_bind(r);
+        }
+        if let Some(rl) = risk_level {
+            q.push(" AND risk_level = ").push_bind(rl);
+        }
+        if let Some(sa) = security_action {
+            q.push(" AND security_action = ").push_bind(sa);
+        }
         if let Some(from) = date_from {
             q.push(" AND created_at >= ").push_bind(from);
         }
@@ -172,6 +196,44 @@ impl Repository {
         q.build_query_as::<RequestLog>()
             .fetch_all(&self.pool)
             .await
+    }
+
+    /// 获取单条日志
+    pub async fn get_log(&self, id: &str) -> Result<RequestLog, sqlx::Error> {
+        sqlx::query_as::<_, RequestLog>("SELECT * FROM request_logs WHERE id = ?")
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    /// 删除单条日志
+    pub async fn delete_log(&self, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM request_logs WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 按天聚合请求统计（供用量页面）
+    pub async fn get_log_stats(&self, days: i64) -> Result<Vec<LogStats>, sqlx::Error> {
+        let cutoff = chrono::Utc::now()
+            .checked_sub_signed(chrono::Duration::days(days))
+            .unwrap()
+            .format("%Y-%m-%d")
+            .to_string();
+        sqlx::query_as::<_, LogStats>(
+            "SELECT substr(created_at, 1, 10) AS date,
+                    COUNT(*) AS requests,
+                    COALESCE(SUM(total_tokens), 0) AS tokens
+             FROM request_logs
+             WHERE created_at >= ?
+             GROUP BY date
+             ORDER BY date ASC",
+        )
+        .bind(&cutoff)
+        .fetch_all(&self.pool)
+        .await
     }
 
     pub async fn get_dashboard_stats(&self) -> Result<DashboardStats, sqlx::Error> {
@@ -205,11 +267,39 @@ impl Repository {
                 .await
                 .unwrap_or(0);
 
+        let total_api_keys: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM api_keys")
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0);
+
+        let total_requests: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM request_logs")
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0);
+
+        let total_tokens: i64 =
+            sqlx::query_scalar("SELECT COALESCE(SUM(total_tokens), 0) FROM request_logs")
+                .fetch_one(&self.pool)
+                .await
+                .unwrap_or(0);
+
+        let avg_latency_ms: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(CAST(AVG(duration_ms) AS INTEGER), 0) FROM request_logs WHERE created_at LIKE ?",
+        )
+        .bind(&today_prefix)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+
         Ok(DashboardStats {
             today_requests,
             today_total_tokens,
-            total_channels,
             active_channels,
+            avg_latency_ms,
+            total_channels,
+            total_api_keys,
+            total_requests,
+            total_tokens,
         })
     }
 
@@ -277,7 +367,7 @@ impl Repository {
     pub async fn create_security_findings(
         &self,
         log_id: &str,
-        findings: &[crate::security::Finding],
+        findings: &[crate::security::SecurityFinding],
         action: &str,
     ) -> Result<(), sqlx::Error> {
         let now = now_iso();
@@ -287,9 +377,9 @@ impl Repository {
                  VALUES (?, ?, ?, ?, ?, ?)",
             )
             .bind(log_id)
-            .bind(&f.rule)
-            .bind(&f.severity)
-            .bind(&f.detail)
+            .bind(&f.rule_id)
+            .bind(&f.severity.as_str())
+            .bind(&f.description)
             .bind(action)
             .bind(&now)
             .execute(&self.pool)
@@ -375,6 +465,15 @@ impl Repository {
     /// 删除密钥
     pub async fn delete_api_key(&self, id: &str) -> Result<(), sqlx::Error> {
         sqlx::query("DELETE FROM api_keys WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 删除渠道
+    pub async fn delete_channel(&self, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM channels WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
             .await?;

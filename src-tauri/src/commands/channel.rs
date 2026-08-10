@@ -46,3 +46,55 @@ pub async fn test_channel(
 
     Ok(result)
 }
+
+#[tauri::command]
+pub async fn toggle_channel(
+    id: String,
+    status: i64,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let repo = Repository::new(state.db.pool.clone());
+    repo.update_channel(&UpdateChannelInput {
+        id,
+        name: None,
+        channel_type: None,
+        base_url: None,
+        api_key: None,
+        models: None,
+        status: Some(status),
+        priority: None,
+        weight: None,
+        config: None,
+        model_mapping: None,
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_channel(
+    id: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let repo = Repository::new(state.db.pool.clone());
+    repo.delete_channel(&id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_channel(
+    id: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Channel, String> {
+    let repo = Repository::new(state.db.pool.clone());
+    repo.get_channel(&id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn update_channel(
+    input: UpdateChannelInput,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Channel, String> {
+    let repo = Repository::new(state.db.pool.clone());
+    repo.update_channel(&input).await.map_err(|e| e.to_string())
+}
