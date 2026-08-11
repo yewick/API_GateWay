@@ -145,7 +145,7 @@ export function ChannelForm({ open, channel, onClose }: ChannelFormProps) {
       onClose={onClose}
       title={isEdit ? "编辑渠道" : "添加渠道"}
       description={isEdit ? "修改渠道配置信息" : "创建新的 LLM 提供方渠道"}
-      size="md"
+      size="lg"
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={loading}>

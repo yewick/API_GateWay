@@ -24,6 +24,7 @@ use crate::core::dispatcher::Dispatcher;
 use crate::core::proxy;
 use crate::db::models::RequestLog;
 use crate::db::repository::Repository;
+use crate::security::{self, SecurityAction};
 use crate::utils;
 
 // ---------- 统一错误响应（OpenAI 兼容格式） ----------
@@ -76,9 +77,59 @@ pub async fn handle_chat_completions(
         Err(_) => return (StatusCode::UNAUTHORIZED, "Invalid API key").into_response(),
     };
 
-    // 3. 配额检查
-    if key_record.quota_limit > 0 && key_record.quota_used >= key_record.quota_limit {
-        return (StatusCode::TOO_MANY_REQUESTS, "Quota exceeded").into_response();
+    // 2.5 过期检查
+    if let Some(ref expires_at) = key_record.expires_at {
+        if !expires_at.is_empty() {
+            let expired = chrono::DateTime::parse_from_rfc3339(expires_at)
+                .map(|expiry| chrono::Utc::now() > expiry)
+                .or_else(|_| {
+                    chrono::NaiveDateTime::parse_from_str(expires_at, "%Y-%m-%dT%H:%M:%S%.3fZ")
+                        .map(|d| chrono::Utc::now() > d.and_utc())
+                })
+                .or_else(|_| {
+                    chrono::NaiveDate::parse_from_str(expires_at, "%Y-%m-%d")
+                        .map(|d| {
+                            chrono::Utc::now()
+                                > d.and_hms_opt(23, 59, 59).unwrap().and_utc()
+                        })
+                })
+                .unwrap_or(false);
+            if expired {
+                return error_response(401, "API key has expired");
+            }
+        }
+    }
+
+    // 3. 配额检查（带 max_tokens 预估缓冲）
+    if key_record.quota_limit > 0 {
+        let remaining = key_record.quota_limit - key_record.quota_used;
+        if remaining <= 0 {
+            return error_response(429, "Quota exceeded");
+        }
+        // 用请求中的 max_tokens 做最低限度预估
+        let max_tokens = json
+            .get("max_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let projected = key_record.quota_used.saturating_add(max_tokens);
+        if projected > key_record.quota_limit {
+            return error_response(
+                429,
+                &format!(
+                    "Quota exceeded (remaining: {}, max_tokens: {})",
+                    remaining, max_tokens
+                ),
+            );
+        }
+        if remaining < 2000 {
+            return error_response(
+                429,
+                &format!(
+                    "Quota nearly exhausted — remaining {} tokens, at least 2000 required",
+                    remaining
+                ),
+            );
+        }
     }
 
     // 4. 保存原始请求体（日志用）
@@ -135,6 +186,47 @@ async fn handle_stream(
         .and_then(|m| m.as_str())
         .unwrap_or("")
         .to_string();
+
+    // 安全扫描（与非流式路径一致）
+    let security_settings = security::get_security_settings(&shared.app);
+    let security_result = security::scan_request(&json, &security_settings);
+    if matches!(security_result.action, SecurityAction::Block) {
+        let log = RequestLog {
+            id: utils::id::new_id(),
+            seq: None,
+            api_key_id: Some(api_key_id.clone()),
+            api_key_name: Some(api_key_name.clone()),
+            channel_id: None,
+            channel_name: None,
+            model: model.clone(),
+            upstream_model: None,
+            mode: "chat".to_string(),
+            status_code: 451,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            duration_ms: 0,
+            error_message: security_result.blocked_reason.clone(),
+            is_stream: 1,
+            is_retry: 0,
+            created_at: utils::time::now_iso(),
+            request_body: Some(request_body.clone()),
+            risk_level: security_result.risk_level.as_str().to_string(),
+            risk_score: security_result.risk_score as i64,
+            risk_summary: Some(security_result.summary.clone()),
+            security_action: security_result.action.as_str().to_string(),
+            sanitized: 0,
+            blocked_reason: security_result.blocked_reason.clone(),
+        };
+        let log_id = log.id.clone();
+        let _ = repo.create_log(&log).await;
+        let _ = repo.create_security_findings(
+            &log_id,
+            &security_result.findings,
+            security_result.action.as_str(),
+        ).await;
+        return error_response(451, &security_result.summary);
+    }
 
     // 渠道调度
     let channels = match repo.get_enabled_channels().await {
@@ -195,6 +287,9 @@ async fn handle_stream(
                 let request_body_c = request_body.clone();
                 let channel_name_c = channel.name.clone();
                 let channel_id_c = channel.id.clone();
+
+                // ── 克隆扫描结果（闭包要 move 进流中）
+                let security_result_clone = security_result.clone();
 
                 // ── 核心：字节透传 + 旁路解析 ──────────────────
                 let upstream_stream = resp.bytes_stream();
@@ -259,14 +354,26 @@ async fn handle_stream(
                         is_retry,
                         created_at: utils::time::now_iso(),
                         request_body: Some(request_body_c),
-                        risk_level: "none".to_string(),
-                        risk_score: 0,
-                        risk_summary: None,
-                        security_action: "audit".to_string(),
-                        sanitized: 0,
-                        blocked_reason: None,
+                        risk_level: security_result_clone.risk_level.as_str().to_string(),
+                        risk_score: security_result_clone.risk_score as i64,
+                        risk_summary: if security_result_clone.summary.is_empty() {
+                            None
+                        } else {
+                            Some(security_result_clone.summary.clone())
+                        },
+                        security_action: security_result_clone.action.as_str().to_string(),
+                        sanitized: if security_result_clone.sanitized { 1 } else { 0 },
+                        blocked_reason: security_result_clone.blocked_reason.clone(),
                     };
+                    let log_id = log.id.clone();
                     let _ = repo_clone.create_log(&log).await;
+                    let _ = repo_clone
+                        .create_security_findings(
+                            &log_id,
+                            &security_result_clone.findings,
+                            security_result_clone.action.as_str(),
+                        )
+                        .await;
                     if usage_total > 0 {
                         let _ = repo_clone.increment_quota(&api_key_id_c, usage_total).await;
                     }
