@@ -54,6 +54,14 @@ pub fn run() {
             // 设置
             commands::settings::get_settings,
             commands::settings::save_settings,
+            // 安全规则
+            commands::security::get_builtin_security_rules,
+            commands::security::update_builtin_security_rule,
+            commands::security::reset_builtin_security_rules,
+            commands::security::get_custom_security_rules,
+            commands::security::create_custom_security_rule,
+            commands::security::toggle_custom_security_rule,
+            commands::security::delete_custom_security_rule,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

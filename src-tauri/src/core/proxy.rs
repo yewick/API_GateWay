@@ -36,7 +36,7 @@ pub async fn handle_request(
 
     // 读取安全配置并扫描请求体
     let security_settings = security::get_security_settings(app);
-    let mut security_result = security::scan_request(&body, &security_settings);
+    let mut security_result = security::scan_request(&body, &security_settings, None);
 
     // 需要脱敏时在转发前改写请求体
     let (forward_body, was_redacted) = if matches!(security_result.action, SecurityAction::Redact)
@@ -137,7 +137,7 @@ pub async fn handle_request(
             Ok((status, resp_body, usage)) => {
                 // 响应侧安全扫描（可选）
                 if !security_result.findings.is_empty() || security_settings.scan_response {
-                    let resp_security = security::scan_response(&resp_body, &security_settings);
+                    let resp_security = security::scan_response(&resp_body, &security_settings, None);
                     if !resp_security.findings.is_empty() {
                         security_result.findings.extend(resp_security.findings);
                         if resp_security.risk_level.rank() > security_result.risk_level.rank() {

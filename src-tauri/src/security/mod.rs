@@ -1,11 +1,19 @@
 pub mod decision;
 pub mod models;
+pub mod redact;
+pub mod rules;
 pub mod scanner;
 
 // 重导出常用类型，兼容旧代码路径
 pub use decision::{decide_action, redact_request_body, scan_request, scan_response};
 pub use models::{
-    RiskLevel, SecurityAction, SecurityFinding, SecurityScanResult, SecuritySettings,
+    BuiltinRule, CreateCustomRuleInput, CustomRule, RiskLevel, SecurityAction, SecurityFinding,
+    SecurityScanResult, SecuritySettings, UpdateBuiltinRuleInput,
+};
+pub use redact::redact_json;
+pub use rules::{
+    apply_custom_rules, is_whitelisted, seed_builtin_rules, BuiltinRuleRepository,
+    CustomRuleRepository,
 };
 pub use scanner::scan_json;
 

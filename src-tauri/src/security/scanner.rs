@@ -2,6 +2,7 @@
 // 对 JSON 请求/响应体做深度遍历，检测凭证泄露、Unicode 隐写、工具/网络风险。
 
 use super::models::{RiskLevel, SecurityAction, SecurityFinding, SecurityScanResult, SecuritySettings};
+use super::rules;
 use serde_json::Value;
 
 /// 单次扫描的 finding 上限（防恶意构造超大量 finding）
@@ -13,9 +14,10 @@ pub fn scan_json(
     value: &Value,
     phase: &str,
     settings: &SecuritySettings,
+    custom_rules: Option<&[crate::security::CustomRule]>,
 ) -> SecurityScanResult {
     let mut findings: Vec<SecurityFinding> = Vec::new();
-    walk_json(value, phase, "$", settings, &mut findings);
+    walk_json(value, phase, "$", settings, custom_rules, &mut findings);
 
     // 评分计算
     compute_score(&findings)
@@ -26,16 +28,17 @@ fn walk_json(
     phase: &str,
     path: &str,
     settings: &SecuritySettings,
+    custom_rules: Option<&[crate::security::CustomRule]>,
     findings: &mut Vec<SecurityFinding>,
 ) {
     if findings.len() >= MAX_FINDINGS {
         return;
     }
     match value {
-        Value::String(s) => scan_text(s, phase, path, settings, findings),
+        Value::String(s) => scan_text(s, phase, path, settings, custom_rules, findings),
         Value::Array(items) => {
             for (i, item) in items.iter().enumerate() {
-                walk_json(item, phase, &format!("{}[{}]", path, i), settings, findings);
+                walk_json(item, phase, &format!("{}[{}]", path, i), settings, custom_rules, findings);
                 if findings.len() >= MAX_FINDINGS {
                     break;
                 }
@@ -48,7 +51,7 @@ fn walk_json(
                 } else {
                     format!("{}.{}", path, k)
                 };
-                walk_json(v, phase, &child, settings, findings);
+                walk_json(v, phase, &child, settings, custom_rules, findings);
                 if findings.len() >= MAX_FINDINGS {
                     break;
                 }
@@ -64,6 +67,7 @@ fn scan_text(
     phase: &str,
     location: &str,
     settings: &SecuritySettings,
+    custom_rules: Option<&[crate::security::CustomRule]>,
     findings: &mut Vec<SecurityFinding>,
 ) {
     // 截断保护：超长字段只扫前 N 字节
@@ -82,6 +86,34 @@ fn scan_text(
     }
     if settings.scan_network {
         scan_network(s, phase, location, findings);
+    }
+
+    // 应用自定义规则（黑名单匹配 / 白名单豁免）
+    // TODO: 自定义规则从 DB 加载后在此处传入
+    if let Some(rules) = custom_rules {
+        if !rules.is_empty() {
+            // 先检查白名单：命中则跳过此次检测
+            let category_for_whitelist = infer_category(location);
+            if rules::is_whitelisted(category_for_whitelist, s, rules) {
+                return;
+            }
+            rules::apply_custom_rules(s, phase, location, rules, findings);
+        }
+    }
+}
+
+/// 根据 JSON 路径推断 content 所属类别（供白名单匹配使用）
+fn infer_category(location: &str) -> &str {
+    if location.contains("messages")
+        && (location.contains("content") || location.contains("role"))
+    {
+        "prompt"
+    } else if location.contains("api_key") || location.contains("token") || location.contains("secret") {
+        "credential"
+    } else if location.contains("tool") || location.contains("function") {
+        "tool"
+    } else {
+        "general"
     }
 }
 
@@ -116,7 +148,7 @@ fn scan_credentials(
             (t.starts_with("eyJ") && t.len() >= 30 && t.contains('.')) || // JWT
             lower.starts_with("bearer ");
         if is_secret {
-            add(
+            add_finding(
                 findings,
                 phase,
                 "credential",
@@ -136,7 +168,7 @@ fn scan_credentials(
         || text.contains("-----BEGIN RSA PRIVATE KEY-----")
         || text.contains("-----BEGIN PRIVATE KEY-----")
     {
-        add(
+        add_finding(
             findings,
             phase,
             "credential",
@@ -161,7 +193,7 @@ fn scan_credentials(
         "database_url",
     ] {
         if lower.contains(key) {
-            add(
+            add_finding(
                 findings,
                 phase,
                 "credential",
@@ -204,7 +236,7 @@ fn scan_unicode(
         }
     }
     if zero_width > 0 {
-        add(
+        add_finding(
             findings,
             phase,
             "unicode",
@@ -217,7 +249,7 @@ fn scan_unicode(
         );
     }
     if bidi > 0 {
-        add(
+        add_finding(
             findings,
             phase,
             "unicode",
@@ -230,7 +262,7 @@ fn scan_unicode(
         );
     }
     if variation > 0 {
-        add(
+        add_finding(
             findings,
             phase,
             "unicode",
@@ -263,7 +295,7 @@ fn scan_network(
         "icanhazip.com",
     ];
     if ip_probe.iter().any(|x| lower.contains(x)) {
-        add(
+        add_finding(
             findings,
             phase,
             "network",
@@ -285,7 +317,7 @@ fn scan_network(
         "transfer.sh",
     ];
     if suspicious.iter().any(|x| lower.contains(x)) {
-        add(
+        add_finding(
             findings,
             phase,
             "network",
@@ -300,7 +332,7 @@ fn scan_network(
 
     // 外部 URL 提示（Info 级）
     if lower.contains("http://") || lower.contains("https://") {
-        add(
+        add_finding(
             findings,
             phase,
             "network",
@@ -335,7 +367,7 @@ fn scan_tool_risks(
     .any(|x| lower.contains(x));
 
     if has_shell {
-        add(
+        add_finding(
             findings,
             phase,
             "tool",
@@ -369,7 +401,7 @@ fn scan_tool_risks(
         .any(|x| lower.contains(x));
 
     if reads_sensitive && network {
-        add(
+        add_finding(
             findings,
             phase,
             "tool",
@@ -384,7 +416,7 @@ fn scan_tool_risks(
 
     // 敏感文件路径检测
     if reads_sensitive {
-        add(
+        add_finding(
             findings,
             phase,
             "file",
@@ -523,8 +555,8 @@ fn snippet(text: &str) -> String {
     }
 }
 
-/// 添加一条 finding（带上限保护）
-fn add(
+/// 添加一条 finding（带上限保护）。公开以支持 custom rules 调用。
+pub fn add_finding(
     findings: &mut Vec<SecurityFinding>,
     phase: &str,
     category: &str,

@@ -130,3 +130,55 @@ pub struct SecuritySettings {
     pub block_on_critical: bool,  // Critical 强制阻断（无视 mode）
     pub max_scan_bytes: usize,    // 单字段最大扫描字节数（性能保护）
 }
+
+// ---------- 内置规则模型 ----------
+
+/// 数据库行：security_builtin_rules
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct BuiltinRule {
+    pub id: String,
+    pub rule_id: String,
+    pub category: String,
+    pub severity: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub toggle_key: Option<String>,
+    pub enabled: i32,
+    pub created_at: String,
+}
+
+/// 内置规则更新入参
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateBuiltinRuleInput {
+    pub enabled: Option<bool>,
+    pub severity: Option<String>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+}
+
+// ---------- 自定义规则模型 ----------
+
+/// 数据库行：security_custom_rules
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct CustomRule {
+    pub id: String,
+    pub rule_type: String,
+    pub category: String,
+    pub pattern: String,
+    pub severity: String,
+    pub action: Option<String>,
+    pub enabled: i32,
+    pub description: Option<String>,
+    pub created_at: String,
+}
+
+/// 自定义规则创建入参
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateCustomRuleInput {
+    pub rule_type: String,
+    pub category: String,
+    pub pattern: String,
+    pub severity: Option<String>,
+    pub action: Option<String>,
+    pub description: Option<String>,
+}

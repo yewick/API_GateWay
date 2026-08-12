@@ -2,6 +2,7 @@
 
 use super::models::{RiskLevel, SecurityAction, SecurityScanResult, SecuritySettings};
 use crate::security::scanner;
+use crate::security::CustomRule;
 use serde_json::Value;
 
 // ---------- 策略决策器 ----------
@@ -56,21 +57,29 @@ pub fn decide_action(result: &mut SecurityScanResult, settings: &SecuritySetting
 // ---------- 入口函数 ----------
 
 /// 扫描请求体（Proxy 层调用入口）
-pub fn scan_request(body: &Value, settings: &SecuritySettings) -> SecurityScanResult {
+pub fn scan_request(
+    body: &Value,
+    settings: &SecuritySettings,
+    custom_rules: Option<&[CustomRule]>,
+) -> SecurityScanResult {
     if !settings.enabled || !settings.scan_request {
         return SecurityScanResult::default();
     }
-    let mut result = scanner::scan_json(body, "request", settings);
+    let mut result = scanner::scan_json(body, "request", settings, custom_rules);
     decide_action(&mut result, settings);
     result
 }
 
 /// 扫描响应体（Proxy 层调用入口）
-pub fn scan_response(body: &Value, settings: &SecuritySettings) -> SecurityScanResult {
+pub fn scan_response(
+    body: &Value,
+    settings: &SecuritySettings,
+    custom_rules: Option<&[CustomRule]>,
+) -> SecurityScanResult {
     if !settings.enabled || !settings.scan_response {
         return SecurityScanResult::default();
     }
-    let mut result = scanner::scan_json(body, "response", settings);
+    let mut result = scanner::scan_json(body, "response", settings, custom_rules);
     decide_action(&mut result, settings);
     result
 }

@@ -189,7 +189,7 @@ async fn handle_stream(
 
     // 安全扫描（与非流式路径一致）
     let security_settings = security::get_security_settings(&shared.app);
-    let security_result = security::scan_request(&json, &security_settings);
+    let security_result = security::scan_request(&json, &security_settings, None);
     if matches!(security_result.action, SecurityAction::Block) {
         let log = RequestLog {
             id: utils::id::new_id(),
