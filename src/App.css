@@ -60,6 +60,26 @@
   color-scheme: dark;
 }
 
+/* ===== 墨纸主题（Ink & Paper，暖纸墨色编辑风） ===== */
+[data-theme="paper"] {
+  --bg-primary: #f5f2ec;
+  --bg-secondary: #fbf9f4;
+  --bg-tertiary: #ede9e0;
+  --bg-hover: #e6e1d5;
+  --border-primary: #ddd6c8;
+  --text-primary: #201a14;
+  --text-secondary: #5d554a;
+  --text-muted: #998f82;
+  --accent: #c2410c;
+  --accent-hover: #9a3412;
+  --success: #3f8f5f;
+  --warning: #b8860b;
+  --danger: #c0392b;
+  --info: #0e7490;
+
+  color-scheme: light;
+}
+
 /* ===== 全局基础样式 ===== */
 html,
 body,

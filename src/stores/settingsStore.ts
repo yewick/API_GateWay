@@ -3,7 +3,7 @@ import { persist } from "zustand/middleware";
 import type { Settings } from "../types";
 import { DEFAULT_SETTINGS } from "../lib/constants";
 import { settingsApi } from "../lib/api";
-import { useThemeStore } from "./themeStore";
+import { useThemeStore, type Theme } from "./themeStore";
 
 interface SettingsStore {
   settings: Settings;
@@ -23,7 +23,7 @@ export const useSettingsStore = create<SettingsStore>()(
         set((state) => ({ settings: { ...state.settings, ...partial } }));
         // 主题变更时同步到 themeStore 和 DOM
         if (partial.ui_theme) {
-          useThemeStore.getState().setTheme(partial.ui_theme as "dark" | "light");
+          useThemeStore.getState().setTheme(partial.ui_theme as Theme);
         }
         if (partial.ui_language && typeof document !== "undefined") {
           document.documentElement.lang = partial.ui_language;

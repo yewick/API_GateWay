@@ -1,21 +1,29 @@
-import { Moon, Sun, MonitorSmartphone } from "lucide-react";
+import { Moon, Sun, MonitorSmartphone, FileText } from "lucide-react";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useTheme } from "../../hooks/useTheme";
+import type { Theme } from "../../stores/themeStore";
 import { LANGUAGES } from "../../lib/constants";
+
+const THEME_LABELS: Record<Theme, string> = {
+  dark: "深色",
+  light: "浅色",
+  paper: "墨纸",
+};
 
 export function UISettingsTab() {
   const settings = useSettingsStore((s) => s.settings);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
-  const { theme, isDark, setTheme } = useTheme();
+  const { theme, setTheme } = useTheme();
 
-  const selectTheme = (t: "dark" | "light") => {
+  const selectTheme = (t: Theme) => {
     setTheme(t);
     updateSettings({ ui_theme: t });
   };
 
-  const themes = [
-    { value: "dark" as const, label: "深色模式", icon: Moon, desc: "Clash Verge 风格深色主题", active: theme === "dark" },
-    { value: "light" as const, label: "浅色模式", icon: Sun, desc: "清爽明亮浅色主题", active: theme === "light" },
+  const themes: { value: Theme; label: string; icon: typeof Moon; desc: string }[] = [
+    { value: "dark", label: "深色模式", icon: Moon, desc: "Clash Verge 风格深色主题" },
+    { value: "light", label: "浅色模式", icon: Sun, desc: "清爽明亮浅色主题" },
+    { value: "paper", label: "墨纸模式", icon: FileText, desc: "暖纸墨色编辑风主题" },
   ];
 
   return (
@@ -30,16 +38,17 @@ export function UISettingsTab() {
         <label className="block mb-2 text-sm font-medium text-text-secondary">
           界面主题
         </label>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-3 gap-4">
           {themes.map((t) => {
             const Icon = t.icon;
+            const active = theme === t.value;
             return (
               <button
                 key={t.value}
                 type="button"
                 onClick={() => selectTheme(t.value)}
                 className={`relative p-4 rounded-xl border-2 text-left transition-all ${
-                  t.active
+                  active
                     ? "border-accent bg-accent/5"
                     : "border-border-primary bg-bg-tertiary hover:border-text-muted"
                 }`}
@@ -47,14 +56,14 @@ export function UISettingsTab() {
                 <div className="flex items-center gap-2.5 mb-2">
                   <Icon
                     size={20}
-                    className={t.active ? "text-accent" : "text-text-secondary"}
+                    className={active ? "text-accent" : "text-text-secondary"}
                   />
                   <span className="text-sm font-medium text-text-primary">
                     {t.label}
                   </span>
                 </div>
                 <p className="text-xs text-text-muted">{t.desc}</p>
-                {t.active && (
+                {active && (
                   <span className="absolute top-3 right-3 w-2 h-2 rounded-full bg-accent" />
                 )}
               </button>
@@ -69,7 +78,7 @@ export function UISettingsTab() {
         <span className="text-sm text-text-secondary">
           当前模式：
           <span className="font-medium text-text-primary">
-            {isDark ? "深色" : "浅色"}
+            {THEME_LABELS[theme]}
           </span>
           ，点击左侧主题卡片或顶栏按钮即可切换
         </span>

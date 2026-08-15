@@ -1,10 +1,10 @@
-import { useThemeStore } from "../stores/themeStore";
+import { useThemeStore, type Theme } from "../stores/themeStore";
 
 export interface UseThemeReturn {
-  theme: "dark" | "light";
+  theme: Theme;
   isDark: boolean;
   toggleTheme: () => void;
-  setTheme: (theme: "dark" | "light") => void;
+  setTheme: (theme: Theme) => void;
 }
 
 export const useTheme = (): UseThemeReturn => {

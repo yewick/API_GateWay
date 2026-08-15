@@ -1,7 +1,10 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-type Theme = "dark" | "light";
+export type Theme = "dark" | "light" | "paper";
+
+// 主题循环顺序（侧边栏主题按钮按此顺序切换）
+const THEME_ORDER: Theme[] = ["dark", "light", "paper"];
 
 interface ThemeStore {
   theme: Theme;
@@ -25,7 +28,7 @@ export const useThemeStore = create<ThemeStore>()(
         set({ theme });
       },
       toggleTheme: () => {
-        const next: Theme = get().theme === "dark" ? "light" : "dark";
+        const next = THEME_ORDER[(THEME_ORDER.indexOf(get().theme) + 1) % THEME_ORDER.length];
         get().setTheme(next);
       },
     }),
