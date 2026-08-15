@@ -4,6 +4,7 @@
 use super::models::{RiskLevel, SecurityAction, SecurityFinding, SecurityScanResult, SecuritySettings};
 use super::rules;
 use serde_json::Value;
+use std::collections::HashSet;
 
 /// 单次扫描的 finding 上限（防恶意构造超大量 finding）
 const MAX_FINDINGS: usize = 80;
@@ -15,9 +16,15 @@ pub fn scan_json(
     phase: &str,
     settings: &SecuritySettings,
     custom_rules: Option<&[crate::security::CustomRule]>,
+    disabled_builtin: &HashSet<String>,
 ) -> SecurityScanResult {
     let mut findings: Vec<SecurityFinding> = Vec::new();
     walk_json(value, phase, "$", settings, custom_rules, &mut findings);
+
+    // 过滤被禁用的内置规则（enabled=0，仅抑制 finding，不影响自定义规则）
+    if !disabled_builtin.is_empty() {
+        findings.retain(|f| !disabled_builtin.contains(&f.rule_id));
+    }
 
     // 评分计算
     compute_score(&findings)
@@ -77,44 +84,59 @@ fn scan_text(
         text
     };
 
-    scan_credentials(s, phase, location, findings);
+    // 先写入局部集合，便于白名单按 finding 粒度豁免
+    let mut local: Vec<SecurityFinding> = Vec::new();
+
+    scan_credentials(s, phase, location, &mut local);
     if settings.scan_unicode {
-        scan_unicode(s, phase, location, findings);
+        scan_unicode(s, phase, location, &mut local);
     }
     if settings.scan_tools {
-        scan_tool_risks(s, phase, location, findings);
+        scan_tool_risks(s, phase, location, &mut local);
     }
     if settings.scan_network {
-        scan_network(s, phase, location, findings);
+        scan_network(s, phase, location, &mut local);
     }
+    scan_file_and_personal(s, phase, location, &mut local);
 
-    // 应用自定义规则（黑名单匹配 / 白名单豁免）
-    // TODO: 自定义规则从 DB 加载后在此处传入
+    // 应用自定义规则（黑名单 + 白名单）
     if let Some(rules) = custom_rules {
         if !rules.is_empty() {
-            // 先检查白名单：命中则跳过此次检测
-            let category_for_whitelist = infer_category(location);
-            if rules::is_whitelisted(category_for_whitelist, s, rules) {
-                return;
+            // 黑名单：命中即产生 finding
+            rules::apply_custom_rules(s, phase, location, rules, &mut local);
+
+            // 白名单：按 category 映射豁免对应内置检测类别（不豁免 custom 黑名单）
+            let lower = s.to_ascii_lowercase();
+            let mut exempt_all = false;
+            let mut exempt_categories: Vec<&str> = Vec::new();
+            for r in rules
+                .iter()
+                .filter(|r| r.enabled == 1 && r.rule_type == "whitelist")
+            {
+                if lower.contains(&r.pattern.to_ascii_lowercase()) {
+                    match r.category.as_str() {
+                        "domain" => exempt_categories.push("network"),
+                        "tool" => exempt_categories.push("tool"),
+                        "path" => {
+                            exempt_categories.push("file");
+                            exempt_categories.push("infra");
+                        }
+                        "keyword" => exempt_all = true,
+                        _ => {}
+                    }
+                }
             }
-            rules::apply_custom_rules(s, phase, location, rules, findings);
+            if exempt_all {
+                local.retain(|f| f.category == "custom");
+            } else if !exempt_categories.is_empty() {
+                local.retain(|f| {
+                    f.category == "custom" || !exempt_categories.contains(&f.category.as_str())
+                });
+            }
         }
     }
-}
 
-/// 根据 JSON 路径推断 content 所属类别（供白名单匹配使用）
-fn infer_category(location: &str) -> &str {
-    if location.contains("messages")
-        && (location.contains("content") || location.contains("role"))
-    {
-        "prompt"
-    } else if location.contains("api_key") || location.contains("token") || location.contains("secret") {
-        "credential"
-    } else if location.contains("tool") || location.contains("function") {
-        "tool"
-    } else {
-        "general"
-    }
+    findings.extend(local);
 }
 
 // ---------- 5.2 凭证检测 ----------
@@ -207,6 +229,43 @@ fn scan_credentials(
             break;
         }
     }
+
+    // 数据库连接串（mysql://、postgres://、mongodb://、redis:// 等）
+    let db_url = [
+        "mysql://",
+        "postgres://",
+        "postgresql://",
+        "mongodb://",
+        "redis://",
+    ];
+    if db_url.iter().any(|x| lower.contains(x)) {
+        add_finding(
+            findings,
+            phase,
+            "credential",
+            "credential.database_url",
+            RiskLevel::High,
+            "发现数据库连接串",
+            "内容包含数据库连接串（mysql/postgres/mongodb/redis），存在凭证泄露风险。",
+            location,
+            &snippet(text),
+        );
+    }
+
+    // 云厂商密钥（腾讯云 SecretId、阿里云 AccessKey）
+    if lower.contains("akid") || lower.contains("ltai") {
+        add_finding(
+            findings,
+            phase,
+            "credential",
+            "credential.cloud_key",
+            RiskLevel::High,
+            "发现云厂商密钥",
+            "内容包含腾讯云 SecretId 或阿里云 AccessKey 样式。",
+            location,
+            &snippet(text),
+        );
+    }
 }
 
 // ---------- 5.3 Unicode 隐写检测 ----------
@@ -220,6 +279,7 @@ fn scan_unicode(
     let mut zero_width = 0u32;
     let mut bidi = 0u32;
     let mut variation = 0u32;
+    let mut homograph = 0u32;
     for ch in text.chars() {
         let code = ch as u32;
         // 零宽字符：ZWSP/ZWNJ/ZWJ/WORD JOINER/BOM
@@ -233,6 +293,10 @@ fn scan_unicode(
         // 变体选择符：可用于隐写编码
         if (0xFE00..=0xFE0F).contains(&code) || (0xE0100..=0xE01EF).contains(&code) {
             variation += 1;
+        }
+        // 同形异义字符：西里尔/希腊字母
+        if (0x0400..=0x04FF).contains(&code) || (0x0370..=0x03FF).contains(&code) {
+            homograph += 1;
         }
     }
     if zero_width > 0 {
@@ -272,6 +336,19 @@ fn scan_unicode(
             "内容包含 Unicode 变体选择符，可能用于隐写编码。",
             location,
             &format!("variation_count={}", variation),
+        );
+    }
+    if homograph > 0 {
+        add_finding(
+            findings,
+            phase,
+            "unicode",
+            "unicode.homograph",
+            RiskLevel::Medium,
+            "发现同形异义字符",
+            "内容包含西里尔/希腊等同形字符，可能用于混淆或钓鱼。",
+            location,
+            &format!("homograph_count={}", homograph),
         );
     }
 }
@@ -340,6 +417,22 @@ fn scan_network(
             RiskLevel::Info,
             "检测到外部 URL",
             "内容包含外部 URL 链接。",
+            location,
+            &snippet(text),
+        );
+    }
+
+    // 追踪像素（1x1 图片、track/pixel/beacon 特征）
+    let tracking = ["1x1", "tracking", "pixel", "beacon"];
+    if tracking.iter().any(|x| lower.contains(x)) {
+        add_finding(
+            findings,
+            phase,
+            "network",
+            "network.tracking_pixel",
+            RiskLevel::High,
+            "检测到追踪像素",
+            "内容包含 1x1 图片或 track/pixel/beacon 等追踪特征。",
             location,
             &snippet(text),
         );
@@ -428,6 +521,163 @@ fn scan_tool_risks(
             &snippet(text),
         );
     }
+
+    // 远程脚本执行：curl/wget 下载并通过管道交给 shell 执行
+    let download_exec = (lower.contains("curl") || lower.contains("wget"))
+        && lower.contains("|")
+        && (lower.contains("bash")
+            || lower.contains("sh -c")
+            || lower.contains("sh;")
+            || lower.contains("sh &&"));
+    if download_exec {
+        add_finding(
+            findings,
+            phase,
+            "tool",
+            "tool.remote_script_exec",
+            RiskLevel::Critical,
+            "远程脚本执行",
+            "内容包含 curl/wget 下载并通过管道交给 shell 执行的组合，存在远程代码执行风险。",
+            location,
+            &snippet(text),
+        );
+    }
+
+    // Git 信息泄露
+    if lower.contains("git remote") || lower.contains("gh auth token") || lower.contains(".git/config") {
+        add_finding(
+            findings,
+            phase,
+            "tool",
+            "tool.git_info",
+            RiskLevel::Low,
+            "Git 信息泄露",
+            "内容包含 git remote、gh auth token 等 Git 相关信息。",
+            location,
+            &snippet(text),
+        );
+    }
+}
+
+// ---------- 5.4b 文件/基础设施/个人信息检测 ----------
+
+fn scan_file_and_personal(
+    text: &str,
+    phase: &str,
+    location: &str,
+    findings: &mut Vec<SecurityFinding>,
+) {
+    let lower = text.to_ascii_lowercase();
+
+    // SSH 密钥文件
+    if lower.contains("id_rsa") || lower.contains("id_ed25519") || lower.contains("id_ecdsa") {
+        add_finding(
+            findings,
+            phase,
+            "file",
+            "file.ssh_key",
+            RiskLevel::Critical,
+            "SSH 密钥文件",
+            "内容包含 SSH 私钥文件名（id_rsa/id_ed25519/id_ecdsa）。",
+            location,
+            &snippet(text),
+        );
+    }
+
+    // 云凭证文件
+    let cloud_cred = [".aws/credentials", ".npmrc", ".pypirc"];
+    if cloud_cred.iter().any(|x| lower.contains(x)) {
+        add_finding(
+            findings,
+            phase,
+            "file",
+            "file.cloud_credentials",
+            RiskLevel::High,
+            "云凭证文件",
+            "内容包含云凭证文件路径（.aws/credentials、.npmrc、.pypirc）。",
+            location,
+            &snippet(text),
+        );
+    }
+
+    // 本地用户路径
+    if lower.contains("/users/") || lower.contains("c:\\users\\") || lower.contains("/home/") {
+        add_finding(
+            findings,
+            phase,
+            "infra",
+            "infra.local_path",
+            RiskLevel::Medium,
+            "本地用户路径",
+            "内容包含本地用户绝对路径（/Users/、C:\\Users\\、/home/）。",
+            location,
+            &snippet(text),
+        );
+    }
+
+    // 邮箱地址
+    if is_email(text) {
+        add_finding(
+            findings,
+            phase,
+            "personal",
+            "personal.email",
+            RiskLevel::Low,
+            "邮箱地址",
+            "内容包含邮箱格式的字符串。",
+            location,
+            &snippet(text),
+        );
+    }
+
+    // 手机号码（中国大陆）
+    if is_phone(text) {
+        add_finding(
+            findings,
+            phase,
+            "personal",
+            "personal.phone",
+            RiskLevel::Low,
+            "手机号码",
+            "内容包含中国大陆手机号格式。",
+            location,
+            &snippet(text),
+        );
+    }
+}
+
+fn is_email(text: &str) -> bool {
+    split_candidates(text).iter().any(|t| {
+        let t = t.trim_matches(|c: char| "\"',;()`".contains(c));
+        if let Some(at) = t.find('@') {
+            let local = &t[..at];
+            let domain = &t[at + 1..];
+            !local.is_empty() && domain.contains('.') && domain.len() >= 3
+        } else {
+            false
+        }
+    })
+}
+
+fn is_phone(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'1' && i + 11 <= bytes.len() {
+            let candidate = &bytes[i + 1..i + 11];
+            let all_digit = candidate.iter().all(|b| b.is_ascii_digit());
+            let second = bytes[i + 1];
+            if all_digit && (b'3'..=b'9').contains(&second) {
+                let before_ok = i == 0 || !bytes[i - 1].is_ascii_digit();
+                let after_ok = i + 11 >= bytes.len() || !bytes[i + 11].is_ascii_digit();
+                if before_ok && after_ok {
+                    return true;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
 }
 
 // ---------- 5.5 评分系统 ----------
@@ -575,6 +825,7 @@ pub fn add_finding(
         category: category.to_string(),
         rule_id: rule_id.to_string(),
         severity,
+        action: "warn".to_string(),
         title: title.to_string(),
         description: description.to_string(),
         location: location.to_string(),

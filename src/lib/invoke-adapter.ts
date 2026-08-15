@@ -37,6 +37,18 @@ export const REAL_COMMANDS = new Set<string>([
   // 设置
   "get_settings",
   "save_settings",
+  // 安全规则
+  "get_builtin_security_rules",
+  "update_builtin_security_rule",
+  "reset_builtin_security_rules",
+  "get_custom_security_rules",
+  "create_custom_security_rule",
+  "toggle_custom_security_rule",
+  "delete_custom_security_rule",
+  // 安全发现
+  "get_log_findings",
+  // 测试台
+  "send_test_request",
 ]);
 
 // 环境检测：是否运行在 Tauri WebView 中
@@ -138,7 +150,10 @@ const emptyFallback = (cmd: string): Promise<any> => {
     cmd === "get_channels" ||
     cmd === "get_api_keys" ||
     cmd === "get_logs" ||
-    cmd === "get_log_stats"
+    cmd === "get_log_stats" ||
+    cmd === "get_builtin_security_rules" ||
+    cmd === "get_custom_security_rules" ||
+    cmd === "get_log_findings"
   ) {
     return Promise.resolve([]);
   }
@@ -170,6 +185,9 @@ const emptyFallback = (cmd: string): Promise<any> => {
       latency_ms: 0,
       error_message: "Backend not available",
     });
+  }
+  if (cmd === "send_test_request") {
+    return Promise.resolve({ status: 0, body: null });
   }
   // 写入/删除等 → void
   return Promise.resolve(undefined);

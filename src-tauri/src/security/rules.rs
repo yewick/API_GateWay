@@ -41,21 +41,21 @@ pub async fn seed_builtin_rules(pool: &SqlitePool) -> Result<(), sqlx::Error> {
          "零宽 Unicode 字符", "检测 U+200B/200C/200D/2060/FEFF 等不可见字符", Some("security.scan_unicode")),
         ("b013", "unicode.bidi_control", "unicode", "high",
          "方向控制 Unicode 字符", "检测 U+202A-202E 等 Bidi 控制字符", Some("security.scan_unicode")),
-        ("b014", "unicode.variation_selector", "unicode", "medium",
+        ("b014", "unicode.variation_selector", "unicode", "low",
          "变体选择符", "检测 variation selector", Some("security.scan_unicode")),
         ("b015", "unicode.homograph", "unicode", "medium",
          "同形异义字符", "检测西里尔、希腊等与拉丁字母同形的字符", Some("security.scan_unicode")),
         // ── 网络风险（4条，受 scan_network 开关控制）──
         ("b016", "network.ip_probe", "network", "high",
          "公网 IP 探测服务", "检测 ifconfig.me、ipinfo.io 等", Some("security.scan_network")),
-        ("b017", "network.suspicious_domain", "network", "high",
+        ("b017", "network.suspicious_domain", "network", "medium",
          "可疑外联域名", "检测 webhook.site、ngrok、pastebin 等", Some("security.scan_network")),
         ("b018", "network.external_url", "network", "info",
          "外部 URL", "检测请求中的外部 URL 链接", Some("security.scan_network")),
         ("b019", "network.tracking_pixel", "network", "high",
          "追踪像素", "检测 1x1 图片、track/pixel/beacon 等追踪特征", Some("security.scan_network")),
         // ── 工具/命令（4条，受 scan_tools 开关控制）──
-        ("b020", "tool.shell.network_or_exec", "tool", "medium",
+        ("b020", "tool.shell.command", "tool", "medium",
          "高风险命令片段", "检测 curl/wget/nc/bash -c 等命令", Some("security.scan_tools")),
         ("b021", "tool.shell.exfiltration", "tool", "critical",
          "疑似敏感数据外传命令", "检测敏感文件读取 + 网络外传组合", Some("security.scan_tools")),
@@ -63,11 +63,6 @@ pub async fn seed_builtin_rules(pool: &SqlitePool) -> Result<(), sqlx::Error> {
          "远程脚本执行", "检测 curl|bash 下载执行组合", Some("security.scan_tools")),
         ("b023", "tool.git_info", "tool", "low",
          "Git 信息泄露", "检测 git remote、gh auth token 等", Some("security.scan_tools")),
-        // ── 提示词风险（2条）──
-        ("b024", "prompt.fingerprint_context", "prompt", "medium",
-         "账号画像/风控上下文", "检测多个时区、代理、指纹、风控相关词同时出现", None),
-        ("b025", "prompt.injection", "prompt", "high",
-         "提示注入/越权", "检测要求模型忽略规则、隐藏行为、绕过审计等指令", None),
     ];
 
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
@@ -222,6 +217,7 @@ pub fn apply_custom_rules(
         };
         if matched && rule.rule_type == "blacklist" {
             let severity = parse_severity(&rule.severity);
+            let before = findings.len();
             scanner::add_finding(
                 findings, phase, "custom",
                 &format!("custom.{}.{}", rule.rule_type, rule.category),
@@ -231,17 +227,12 @@ pub fn apply_custom_rules(
                     format!("匹配自定义{}规则: {}", rule.rule_type, rule.pattern)),
                 location, &rule.pattern,
             );
+            // 将规则的 action（warn/block）写入该 finding，供决策器判断强制阻断
+            if findings.len() > before {
+                if let Some(last) = findings.last_mut() {
+                    last.action = rule.action.clone().unwrap_or_else(|| "warn".to_string());
+                }
+            }
         }
     }
-}
-
-/// 白名单检查：命中则豁免对应类别的检测
-pub fn is_whitelisted(category: &str, value: &str, custom_rules: &[CustomRule]) -> bool {
-    let lower = value.to_ascii_lowercase();
-    custom_rules.iter().any(|r| {
-        r.enabled == 1
-            && r.rule_type == "whitelist"
-            && r.category == category
-            && lower.contains(&r.pattern.to_ascii_lowercase())
-    })
 }

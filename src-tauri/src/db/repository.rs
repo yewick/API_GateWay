@@ -140,6 +140,7 @@ impl Repository {
         is_retry: Option<i64>,
         risk_level: Option<&str>,
         security_action: Option<&str>,
+        finding_rule: Option<&str>,
         date_from: Option<&str>,
         date_to: Option<&str>,
         limit: i64,
@@ -181,6 +182,11 @@ impl Repository {
         if let Some(sa) = security_action {
             q.push(" AND security_action = ").push_bind(sa);
         }
+        if let Some(fr) = finding_rule {
+            q.push(" AND EXISTS (SELECT 1 FROM security_findings f WHERE f.log_id = request_logs.id AND f.rule LIKE ")
+                .push_bind(format!("%{}%", fr))
+                .push(")");
+        }
         if let Some(from) = date_from {
             q.push(" AND created_at >= ").push_bind(from);
         }
@@ -206,8 +212,12 @@ impl Repository {
             .await
     }
 
-    /// 删除单条日志
+    /// 删除单条日志（级联删除关联的 security_findings）
     pub async fn delete_log(&self, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM security_findings WHERE log_id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         sqlx::query("DELETE FROM request_logs WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
@@ -478,5 +488,40 @@ impl Repository {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// 获取单条日志的所有安全发现明细
+    pub async fn get_findings_by_log_id(
+        &self,
+        log_id: &str,
+    ) -> Result<Vec<SecurityFindingRow>, sqlx::Error> {
+        sqlx::query_as::<_, SecurityFindingRow>(
+            "SELECT * FROM security_findings WHERE log_id = ? ORDER BY severity DESC, id ASC",
+        )
+        .bind(log_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// 获取所有启用的自定义规则（用于扫描时加载）
+    pub async fn get_enabled_custom_rules(
+        &self,
+    ) -> Result<Vec<crate::security::CustomRule>, sqlx::Error> {
+        sqlx::query_as::<_, crate::security::CustomRule>(
+            "SELECT * FROM security_custom_rules WHERE enabled = 1 ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// 获取全部内置规则（用于扫描时构建禁用集合）
+    pub async fn get_all_builtin_rules(
+        &self,
+    ) -> Result<Vec<crate::security::BuiltinRule>, sqlx::Error> {
+        sqlx::query_as::<_, crate::security::BuiltinRule>(
+            "SELECT * FROM security_builtin_rules ORDER BY rule_id",
+        )
+        .fetch_all(&self.pool)
+        .await
     }
 }

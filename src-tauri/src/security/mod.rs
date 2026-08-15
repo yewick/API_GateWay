@@ -10,9 +10,9 @@ pub use models::{
     BuiltinRule, CreateCustomRuleInput, CustomRule, RiskLevel, SecurityAction, SecurityFinding,
     SecurityScanResult, SecuritySettings, UpdateBuiltinRuleInput,
 };
-pub use redact::redact_json;
+pub use redact::{mask_string, redact_json};
 pub use rules::{
-    apply_custom_rules, is_whitelisted, seed_builtin_rules, BuiltinRuleRepository,
+    apply_custom_rules, seed_builtin_rules, BuiltinRuleRepository,
     CustomRuleRepository,
 };
 pub use scanner::scan_json;

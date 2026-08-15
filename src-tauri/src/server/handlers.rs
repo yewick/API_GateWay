@@ -6,6 +6,7 @@ use axum::{
 };
 use bytes::Bytes;
 use futures_util::StreamExt;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -189,7 +190,22 @@ async fn handle_stream(
 
     // 安全扫描（与非流式路径一致）
     let security_settings = security::get_security_settings(&shared.app);
-    let security_result = security::scan_request(&json, &security_settings, None);
+    // 加载自定义规则
+    let custom_rules = repo
+        .get_enabled_custom_rules()
+        .await
+        .unwrap_or_default();
+    // 加载被禁用的内置规则
+    let disabled_builtin: HashSet<String> = repo
+        .get_all_builtin_rules()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r.enabled == 0)
+        .map(|r| r.rule_id)
+        .collect();
+    let security_result =
+        security::scan_request(&json, &security_settings, Some(&custom_rules), &disabled_builtin);
     if matches!(security_result.action, SecurityAction::Block) {
         let log = RequestLog {
             id: utils::id::new_id(),
@@ -211,6 +227,7 @@ async fn handle_stream(
             is_retry: 0,
             created_at: utils::time::now_iso(),
             request_body: Some(request_body.clone()),
+            forward_body: None,
             risk_level: security_result.risk_level.as_str().to_string(),
             risk_score: security_result.risk_score as i64,
             risk_summary: Some(security_result.summary.clone()),
@@ -354,6 +371,7 @@ async fn handle_stream(
                         is_retry,
                         created_at: utils::time::now_iso(),
                         request_body: Some(request_body_c),
+                        forward_body: None,
                         risk_level: security_result_clone.risk_level.as_str().to_string(),
                         risk_score: security_result_clone.risk_score as i64,
                         risk_summary: if security_result_clone.summary.is_empty() {

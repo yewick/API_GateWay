@@ -1,6 +1,10 @@
+import { useState } from "react";
 import { Select } from "../ui/Select";
 import { Toggle } from "../ui/Toggle";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { BuiltinRulesTab } from "./BuiltinRulesTab";
+import { CustomRulesTab } from "./CustomRulesTab";
+import { TestConsoleTab } from "./TestConsoleTab";
 
 const MODE_OPTIONS = [
   { value: "audit", label: "审计模式 (audit)" },
@@ -16,19 +20,21 @@ const MODE_HINTS: Record<string, string> = {
   block: "High 以上风险直接拒绝，返回 451 状态码",
 };
 
-export function SecurityTab() {
+const SUB_TABS = [
+  { key: "policy", label: "策略" },
+  { key: "builtin", label: "内置规则" },
+  { key: "custom", label: "自定义规则" },
+  { key: "test", label: "测试" },
+] as const;
+
+type SubTabKey = (typeof SUB_TABS)[number]["key"];
+
+function PolicySection() {
   const settings = useSettingsStore((s) => s.settings);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
 
   return (
     <div className="space-y-6 max-w-xl">
-      <div>
-        <h4 className="text-sm font-semibold text-text-primary mb-1">安全审计</h4>
-        <p className="text-xs text-text-muted mb-4">
-          配置 LLM 请求/响应的内容安全扫描策略。扫描在 Proxy 层实时执行。
-        </p>
-      </div>
-
       {/* 总开关 */}
       <div className="space-y-4 bg-bg-tertiary/50 rounded-lg p-4 divide-y divide-border-primary/50">
         <Toggle
@@ -166,6 +172,43 @@ export function SecurityTab() {
           />
         </div>
       </div>
+    </div>
+  );
+}
+
+export function SecurityTab() {
+  const [subTab, setSubTab] = useState<SubTabKey>("policy");
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h4 className="text-sm font-semibold text-text-primary mb-1">安全审计</h4>
+        <p className="text-xs text-text-muted mb-4">
+          配置 LLM 请求/响应的内容安全扫描策略。扫描在 Proxy 层实时执行。
+        </p>
+      </div>
+
+      {/* 子标签 */}
+      <div className="flex gap-1 bg-bg-tertiary rounded-lg p-1 w-fit">
+        {SUB_TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setSubTab(t.key)}
+            className={`px-3 py-1.5 text-xs rounded-md font-medium transition-colors ${
+              subTab === t.key
+                ? "bg-bg-secondary text-text-primary shadow-sm"
+                : "text-text-muted hover:text-text-secondary"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {subTab === "policy" && <PolicySection />}
+      {subTab === "builtin" && <BuiltinRulesTab />}
+      {subTab === "custom" && <CustomRulesTab />}
+      {subTab === "test" && <TestConsoleTab />}
     </div>
   );
 }

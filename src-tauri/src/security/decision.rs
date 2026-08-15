@@ -4,6 +4,7 @@ use super::models::{RiskLevel, SecurityAction, SecurityScanResult, SecuritySetti
 use crate::security::scanner;
 use crate::security::CustomRule;
 use serde_json::Value;
+use std::collections::HashSet;
 
 // ---------- 策略决策器 ----------
 
@@ -49,6 +50,11 @@ pub fn decide_action(result: &mut SecurityScanResult, settings: &SecuritySetting
         result.action = SecurityAction::Block;
     }
 
+    // 自定义规则 action=block：无论 mode 都强制阻断
+    if result.findings.iter().any(|f| f.action == "block") {
+        result.action = SecurityAction::Block;
+    }
+
     if matches!(result.action, SecurityAction::Block) {
         result.blocked_reason = Some(result.summary.clone());
     }
@@ -61,11 +67,12 @@ pub fn scan_request(
     body: &Value,
     settings: &SecuritySettings,
     custom_rules: Option<&[CustomRule]>,
+    disabled_builtin: &HashSet<String>,
 ) -> SecurityScanResult {
     if !settings.enabled || !settings.scan_request {
         return SecurityScanResult::default();
     }
-    let mut result = scanner::scan_json(body, "request", settings, custom_rules);
+    let mut result = scanner::scan_json(body, "request", settings, custom_rules, disabled_builtin);
     decide_action(&mut result, settings);
     result
 }
@@ -75,11 +82,12 @@ pub fn scan_response(
     body: &Value,
     settings: &SecuritySettings,
     custom_rules: Option<&[CustomRule]>,
+    disabled_builtin: &HashSet<String>,
 ) -> SecurityScanResult {
     if !settings.enabled || !settings.scan_response {
         return SecurityScanResult::default();
     }
-    let mut result = scanner::scan_json(body, "response", settings, custom_rules);
+    let mut result = scanner::scan_json(body, "response", settings, custom_rules, disabled_builtin);
     decide_action(&mut result, settings);
     result
 }
@@ -110,7 +118,7 @@ fn redact_recursive(value: &Value, changed: &mut bool) -> Value {
         Value::String(s) => {
             if is_secret_like(s) {
                 *changed = true;
-                Value::String("[REDACTED]".to_string())
+                Value::String(crate::security::mask_string(s))
             } else {
                 value.clone()
             }

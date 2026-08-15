@@ -49,6 +49,7 @@ pub fn run() {
             commands::logs::get_log,
             commands::logs::delete_log,
             commands::logs::get_log_stats,
+            commands::logs::get_log_findings,
             // 仪表盘
             commands::dashboard::get_dashboard_stats,
             // 设置
@@ -62,6 +63,8 @@ pub fn run() {
             commands::security::create_custom_security_rule,
             commands::security::toggle_custom_security_rule,
             commands::security::delete_custom_security_rule,
+            // 测试台
+            commands::test::send_test_request,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

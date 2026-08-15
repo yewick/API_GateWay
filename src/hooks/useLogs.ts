@@ -6,6 +6,9 @@ export interface LogFilters {
   channel_name?: string;
   model?: string;
   status_code?: number;
+  risk_level?: string;
+  security_action?: string;
+  finding_rule?: string;
   start_date?: string;
   end_date?: string;
   page?: number;

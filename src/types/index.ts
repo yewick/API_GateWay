@@ -48,6 +48,7 @@ export interface RequestLog {
   is_retry: boolean;
   created_at: string;
   request_body: string | null;
+  forward_body: string | null;
   risk_level: string;
   risk_score: number;
   risk_summary: string | null;
@@ -132,4 +133,56 @@ export interface LogStats {
   date: string;
   requests: number;
   tokens: number;
+}
+
+// ---------- 安全规则 ----------
+
+export interface BuiltinRule {
+  id: string;
+  rule_id: string;
+  category: string;
+  severity: string;
+  title: string;
+  description: string | null;
+  toggle_key: string | null;
+  enabled: number;
+  created_at: string;
+}
+
+export interface UpdateBuiltinRuleInput {
+  enabled?: boolean;
+  severity?: string;
+  title?: string;
+  description?: string;
+}
+
+export interface CustomRule {
+  id: string;
+  rule_type: string;
+  category: string;
+  pattern: string;
+  severity: string;
+  action: string | null;
+  enabled: number;
+  description: string | null;
+  created_at: string;
+}
+
+export interface CreateCustomRuleInput {
+  rule_type: string;
+  category: string;
+  pattern: string;
+  severity?: string;
+  action?: string;
+  description?: string;
+}
+
+export interface SecurityFinding {
+  id: number;
+  log_id: string;
+  rule: string;
+  severity: string;
+  detail: string | null;
+  action: string;
+  created_at: string;
 }

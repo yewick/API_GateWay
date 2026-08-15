@@ -82,6 +82,7 @@ pub struct SecurityFinding {
     pub category: String,        // credential | file | unicode | network | tool | prompt
     pub rule_id: String,         // 如 credential.secret_token
     pub severity: RiskLevel,
+    pub action: String,          // warn | block（自定义规则 action 参与决策）
     pub title: String,
     pub description: String,
     pub location: String,        // JSON 路径，如 $.messages[0].content

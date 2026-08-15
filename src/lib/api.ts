@@ -1,6 +1,8 @@
 import { invoke } from "./invoke-adapter";
 import type { Channel, CreateChannelInput, UpdateChannelInput, TestChannelResult,
-  ApiKey, CreateApiKeyInput, RequestLog, LogStats, DashboardStats, Settings } from "../types";
+  ApiKey, CreateApiKeyInput, RequestLog, LogStats, DashboardStats, Settings,
+  BuiltinRule, UpdateBuiltinRuleInput, CustomRule, CreateCustomRuleInput,
+  SecurityFinding } from "../types";
 
 // 渠道管理 API
 export const channelApi = {
@@ -32,6 +34,7 @@ interface GetLogsInput {
   is_retry?: boolean;
   risk_level?: string;
   security_action?: string;
+  finding_rule?: string;
   start_date?: string;
   end_date?: string;
   page?: number;
@@ -44,6 +47,7 @@ export const logApi = {
   get: (id: string) => invoke<RequestLog>("get_log", { id }),
   delete: (id: string) => invoke<void>("delete_log", { id }),
   getStats: (days?: number) => invoke<LogStats[]>("get_log_stats", { days }),
+  getFindings: (logId: string) => invoke<SecurityFinding[]>("get_log_findings", { logId }),
 };
 
 // 仪表盘 API
@@ -55,4 +59,25 @@ export const statsApi = {
 export const settingsApi = {
   get: () => invoke<Settings>("get_settings"),
   save: (settings: Settings) => invoke<void>("save_settings", { settings }),
+};
+
+// 安全规则 API
+export const securityApi = {
+  getBuiltinRules: () => invoke<BuiltinRule[]>("get_builtin_security_rules"),
+  updateBuiltinRule: (id: string, input: UpdateBuiltinRuleInput) =>
+    invoke<void>("update_builtin_security_rule", { id, input }),
+  resetBuiltinRules: () => invoke<void>("reset_builtin_security_rules"),
+  getCustomRules: () => invoke<CustomRule[]>("get_custom_security_rules"),
+  createCustomRule: (input: CreateCustomRuleInput) =>
+    invoke<CustomRule>("create_custom_security_rule", { input }),
+  toggleCustomRule: (id: string, enabled: boolean) =>
+    invoke<void>("toggle_custom_security_rule", { id, enabled }),
+  deleteCustomRule: (id: string) =>
+    invoke<void>("delete_custom_security_rule", { id }),
+};
+
+// 测试台 API
+export const testApi = {
+  send: (input: { host: string; api_key: string; model: string; content: string }) =>
+    invoke<{ status: number; body: unknown }>("send_test_request", { input }),
 };

@@ -54,6 +54,18 @@ pub async fn create_custom_security_rule(
     input: CreateCustomRuleInput,
     state: State<'_, Arc<AppState>>,
 ) -> Result<CustomRule, String> {
+    // 后端兜底校验：category 只认这 4 个值，写错会导致匹配静默失效
+    const VALID_CATEGORIES: [&str; 4] = ["domain", "tool", "path", "keyword"];
+    if !VALID_CATEGORIES.contains(&input.category.as_str()) {
+        return Err(format!(
+            "非法的 category: {}，可选值: {}",
+            input.category,
+            VALID_CATEGORIES.join(", ")
+        ));
+    }
+    if input.rule_type != "blacklist" && input.rule_type != "whitelist" {
+        return Err(format!("非法的 rule_type: {}", input.rule_type));
+    }
     CustomRuleRepository::create(&state.db.pool, &input)
         .await
         .map_err(|e| e.to_string())

@@ -58,6 +58,7 @@ pub struct RequestLog {
     pub is_retry: i64,
     pub created_at: String,
     pub request_body: Option<String>,
+    pub forward_body: Option<String>,
     // 安全审计字段（003_security_audit.sql 添加）
     pub risk_level: String,
     pub risk_score: i64,
@@ -133,4 +134,16 @@ pub struct CreateApiKeyInput {
 pub struct UpdateApiKeyInput {
     pub id: String,
     pub status: i64,
+}
+
+/// security_findings 表行
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct SecurityFindingRow {
+    pub id: i64,
+    pub log_id: String,
+    pub rule: String,
+    pub severity: String,
+    pub detail: Option<String>,
+    pub action: String,
+    pub created_at: String,
 }

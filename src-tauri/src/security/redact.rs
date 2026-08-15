@@ -187,7 +187,7 @@ where F: Fn(&str) -> bool {
     result
 }
 
-fn mask_string(s: &str) -> String {
+pub fn mask_string(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     if chars.len() <= 8 {
         return "****".to_string();

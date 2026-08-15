@@ -14,6 +14,7 @@ pub struct GetLogsInput {
     pub is_retry: Option<i64>,
     pub risk_level: Option<String>,
     pub security_action: Option<String>,
+    pub finding_rule: Option<String>,
     pub start_date: Option<String>,
     pub end_date: Option<String>,
     pub keyword: Option<String>,
@@ -40,6 +41,7 @@ pub async fn get_logs(
         input.is_retry,
         input.risk_level.as_deref(),
         input.security_action.as_deref(),
+        input.finding_rule.as_deref(),
         input.start_date.as_deref(),
         input.end_date.as_deref(),
         page_size,
@@ -74,6 +76,17 @@ pub async fn get_log_stats(
 ) -> Result<Vec<LogStats>, String> {
     let repo = Repository::new(state.db.pool.clone());
     repo.get_log_stats(days.unwrap_or(30))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_log_findings(
+    log_id: String,
+    state: tauri::State<'_, std::sync::Arc<AppState>>,
+) -> Result<Vec<SecurityFindingRow>, String> {
+    let repo = Repository::new(state.db.pool.clone());
+    repo.get_findings_by_log_id(&log_id)
         .await
         .map_err(|e| e.to_string())
 }
