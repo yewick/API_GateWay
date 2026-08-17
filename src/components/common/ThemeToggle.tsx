@@ -1,4 +1,4 @@
-import { Moon, Sun, FileText } from "lucide-react";
+import { Moon, Sun, FileText, MonitorSmartphone } from "lucide-react";
 import { useTheme } from "../../hooks/useTheme";
 import type { Theme } from "../../stores/themeStore";
 
@@ -11,6 +11,7 @@ const THEME_META: Record<Theme, { icon: typeof Sun; label: string }> = {
   dark: { icon: Moon, label: "深色模式" },
   light: { icon: Sun, label: "浅色模式" },
   paper: { icon: FileText, label: "墨纸模式" },
+  system: { icon: MonitorSmartphone, label: "跟随系统" },
 };
 
 export function ThemeToggle({ showLabel = false, className = "" }: ThemeToggleProps) {

@@ -28,10 +28,15 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "Local LLM API Gateway",
+    "longDescription": "YeAPI is a local LLM API gateway that proxies, routes, load-balances and audits requests to multiple LLM providers.",
+    "publisher": "YeAPI",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
+      "icons/icon.png",
       "icons/icon.icns",
       "icons/icon.ico"
     ]

@@ -127,7 +127,15 @@ pub async fn save_settings(
     if let Some(v) = settings.close_to_tray {
         store.set("ui.close_to_tray", serde_json::Value::Bool(v));
     }
+    let mut auto_start_changed: Option<bool> = None;
     if let Some(v) = settings.auto_start {
+        let current = store
+            .get("ui.auto_start")
+            .and_then(|val| val.as_bool())
+            .unwrap_or(false);
+        if current != v {
+            auto_start_changed = Some(v);
+        }
         store.set("ui.auto_start", serde_json::Value::Bool(v));
     }
     if let Some(v) = settings.retry_enabled {
@@ -163,5 +171,18 @@ pub async fn save_settings(
     if let Some(v) = settings.security_block_on_critical {
         store.set("security.block_on_critical", serde_json::Value::Bool(v));
     }
-    store.save().map_err(|e| e.to_string())
+    store.save().map_err(|e| e.to_string())?;
+
+    // 开机自启：仅当值变化时应用到操作系统（LaunchAgent / 注册表 / autostart.desktop）
+    if let Some(enabled) = auto_start_changed {
+        use tauri_plugin_autostart::ManagerExt;
+        let autostart = app.autolaunch();
+        if enabled {
+            autostart.enable().map_err(|e| e.to_string())?;
+        } else {
+            autostart.disable().map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(())
 }

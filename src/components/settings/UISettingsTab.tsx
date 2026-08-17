@@ -8,6 +8,7 @@ const THEME_LABELS: Record<Theme, string> = {
   dark: "深色",
   light: "浅色",
   paper: "墨纸",
+  system: "跟随系统",
 };
 
 export function UISettingsTab() {
@@ -24,6 +25,7 @@ export function UISettingsTab() {
     { value: "dark", label: "深色模式", icon: Moon, desc: "Clash Verge 风格深色主题" },
     { value: "light", label: "浅色模式", icon: Sun, desc: "清爽明亮浅色主题" },
     { value: "paper", label: "墨纸模式", icon: FileText, desc: "暖纸墨色编辑风主题" },
+    { value: "system", label: "跟随系统", icon: MonitorSmartphone, desc: "跟随操作系统深浅色自动切换" },
   ];
 
   return (
@@ -38,7 +40,7 @@ export function UISettingsTab() {
         <label className="block mb-2 text-sm font-medium text-text-secondary">
           界面主题
         </label>
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 gap-4">
           {themes.map((t) => {
             const Icon = t.icon;
             const active = theme === t.value;

@@ -37,6 +37,8 @@ export const REAL_COMMANDS = new Set<string>([
   // 设置
   "get_settings",
   "save_settings",
+  // 服务器
+  "restart_server",
   // 安全规则
   "get_builtin_security_rules",
   "update_builtin_security_rule",

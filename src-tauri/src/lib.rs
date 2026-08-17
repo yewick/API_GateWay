@@ -4,6 +4,7 @@ mod core;
 mod db;
 mod security;
 mod server;
+mod tray;
 mod utils;
 
 use std::sync::Arc;
@@ -16,7 +17,7 @@ pub struct AppState {
     pub db: Arc<db::Database>,
     pub server_port: Arc<tokio::sync::RwLock<u16>>,
     pub server_running: Arc<AtomicBool>,
-    pub server_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    pub server_handle: Arc<RwLock<Option<tauri::async_runtime::JoinHandle<()>>>>,
 }
 
 #[tauri::command]
@@ -29,6 +30,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None::<Vec<&str>>,
+        ))
         .invoke_handler(tauri::generate_handler![
             greet,
             // 渠道
@@ -55,6 +60,8 @@ pub fn run() {
             // 设置
             commands::settings::get_settings,
             commands::settings::save_settings,
+            // 服务器
+            commands::server::restart_server,
             // 安全规则
             commands::security::get_builtin_security_rules,
             commands::security::update_builtin_security_rule,
@@ -81,13 +88,29 @@ pub fn run() {
 
                 handle.manage(state.clone());
 
-                tauri::async_runtime::spawn(async move {
-                    let _ = server::start_server(handle, state).await;
+                // 系统托盘 + 窗口事件（关闭/最小化到托盘）
+                tray::setup_tray(&handle)?;
+                tray::setup_window_events(&handle)?;
+
+                // 启动本地 HTTP 服务，并保存任务句柄以便重启
+                let state_for_server = state.clone();
+                let handle_for_server = handle.clone();
+                let join = tauri::async_runtime::spawn(async move {
+                    let _ = server::start_server(handle_for_server, state_for_server).await;
                 });
-            });
+                *state.server_handle.write().unwrap() = Some(join);
+
+                Ok::<(), tauri::Error>(())
+            })?;
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                let _ = tray::restore_main_window(app);
+            }
+        });
 }

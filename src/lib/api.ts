@@ -59,6 +59,7 @@ export const statsApi = {
 export const settingsApi = {
   get: () => invoke<Settings>("get_settings"),
   save: (settings: Settings) => invoke<void>("save_settings", { settings }),
+  restartServer: () => invoke<void>("restart_server"),
 };
 
 // 安全规则 API
