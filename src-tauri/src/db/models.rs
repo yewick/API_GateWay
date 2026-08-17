@@ -59,6 +59,9 @@ pub struct RequestLog {
     pub created_at: String,
     pub request_body: Option<String>,
     pub forward_body: Option<String>,
+    // 多协议转换存储支持（007_response_choices / 008_trace_id）
+    pub response_choices: Option<String>,
+    pub trace_id: Option<String>,
     // 安全审计字段（003_security_audit.sql 添加）
     pub risk_level: String,
     pub risk_score: i64,

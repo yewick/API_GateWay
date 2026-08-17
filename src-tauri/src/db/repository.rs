@@ -335,16 +335,29 @@ impl Repository {
 
     /// 写入一条请求日志
     pub async fn create_log(&self, log: &RequestLog) -> Result<(), sqlx::Error> {
+        // seq 为 None 时按当前最大序号 +1 回填，保证序列连续（本地单实例网关，并发可忽略）
+        let seq = match log.seq {
+            Some(s) => Some(s),
+            None => {
+                let next: i64 = sqlx::query_scalar("SELECT IFNULL(MAX(seq), 0) + 1 FROM request_logs")
+                    .fetch_one(&self.pool)
+                    .await
+                    .unwrap_or(0);
+                Some(next)
+            }
+        };
+
         sqlx::query(
             "INSERT INTO request_logs
                (id, seq, api_key_id, api_key_name, channel_id, channel_name, model, upstream_model,
                 mode, status_code, prompt_tokens, completion_tokens, total_tokens, duration_ms,
-                error_message, is_stream, is_retry, created_at, request_body,
+                error_message, is_stream, is_retry, created_at, request_body, forward_body,
+                response_choices, trace_id,
                 risk_level, risk_score, risk_summary, security_action, sanitized, blocked_reason)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&log.id)
-        .bind(log.seq)
+        .bind(seq)
         .bind(&log.api_key_id)
         .bind(&log.api_key_name)
         .bind(&log.channel_id)
@@ -362,6 +375,9 @@ impl Repository {
         .bind(log.is_retry)
         .bind(&log.created_at)
         .bind(&log.request_body)
+        .bind(&log.forward_body)
+        .bind(&log.response_choices)
+        .bind(&log.trace_id)
         .bind(&log.risk_level)
         .bind(log.risk_score)
         .bind(&log.risk_summary)

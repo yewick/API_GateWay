@@ -27,6 +27,7 @@ pub async fn handle_request(
     body: serde_json::Value,
     is_stream: bool,
     request_body: Option<String>,
+    trace_id: Option<String>,
 ) -> Result<ProxyResult, (u16, String)> {
     let start = Instant::now();
     let model = body
@@ -90,6 +91,8 @@ pub async fn handle_request(
             created_at: utils::time::now_iso(),
             request_body: request_body.clone(),
             forward_body: None,
+            response_choices: None,
+            trace_id: trace_id.clone(),
             risk_level: security_result.risk_level.as_str().to_string(),
             risk_score: security_result.risk_score as i64,
             risk_summary: Some(security_result.summary.clone()),
@@ -193,6 +196,8 @@ pub async fn handle_request(
                     } else {
                         None
                     },
+                    response_choices: resp_body.get("choices").map(|c| c.to_string()),
+                    trace_id: trace_id.clone(),
                     risk_level: security_result.risk_level.as_str().to_string(),
                     risk_score: security_result.risk_score as i64,
                     risk_summary: if security_result.summary.is_empty() {
@@ -250,6 +255,8 @@ pub async fn handle_request(
                     } else {
                         None
                     },
+                    response_choices: None,
+                    trace_id: trace_id.clone(),
                     risk_level: security_result.risk_level.as_str().to_string(),
                     risk_score: security_result.risk_score as i64,
                     risk_summary: if security_result.summary.is_empty() {

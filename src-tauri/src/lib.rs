@@ -2,6 +2,7 @@ mod adaptor;
 mod commands;
 mod core;
 mod db;
+mod protocol;
 mod security;
 mod server;
 mod tray;
