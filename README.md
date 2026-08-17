@@ -6,6 +6,12 @@ YeAPI 是一个基于 [Tauri v2](https://tauri.app) 的桌面应用：前端用 
 
 ---
 
+## 下载安装
+
+> 各平台安装包（macOS / Windows / Linux）请到 [Releases 最新版](https://github.com/yewick/API_GateWay/releases/latest) 下载。
+
+[![GitHub release](https://img.shields.io/github/v/release/yewick/API_GateWay)](https://github.com/yewick/API_GateWay/releases/latest)
+
 ## 功能特性
 
 - **多渠道聚合**：OpenAI / DeepSeek / Claude / Gemini / 通义千问 / 智谱 GLM / Kimi / 豆包 / Ollama / 自定义（OpenAI 兼容），统一适配、统一入口。
