@@ -5,6 +5,7 @@ mod db;
 mod protocol;
 mod security;
 mod server;
+mod services;
 mod tray;
 mod utils;
 
@@ -73,6 +74,8 @@ pub fn run() {
             commands::security::delete_custom_security_rule,
             // 测试台
             commands::test::send_test_request,
+            // 服务状态
+            commands::services::get_service_statuses,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

@@ -14,6 +14,10 @@ pub fn create_router(app: AppHandle, state: Arc<AppState>) -> Router {
         .allow_headers(Any)
         .expose_headers(Any);
 
+    // Service registry — 合并所有服务路由（知识库 / MCP 等）
+    let registry = crate::services::ServiceRegistry::new();
+    let service_router = registry.merge_routes(state.clone());
+
     Router::new()
         .route("/v1/chat/completions", post(handle_chat_completions))
         .route("/v1/completions", post(handle_completions))
@@ -25,6 +29,7 @@ pub fn create_router(app: AppHandle, state: Arc<AppState>) -> Router {
         .route("/v1/audio/transcriptions", post(handle_audio_transcriptions))
         .route("/v1/audio/speech", post(handle_audio_speech))
         .route("/health", get(handle_health))
+        .merge(service_router)
         .layer(cors)
         .with_state(shared)
 }

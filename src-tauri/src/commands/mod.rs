@@ -4,5 +4,6 @@ pub mod dashboard;
 pub mod logs;
 pub mod security;
 pub mod server;
+pub mod services;
 pub mod settings;
 pub mod test;
