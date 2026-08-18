@@ -12,9 +12,12 @@ dist
 dist-ssr
 *.local
 
+# AI / agent tooling (local-only, not shared via git)
+.agents/
+.claude/skills/
+
 # Editor directories and files
-.vscode/*
-!.vscode/extensions.json
+.vscode/
 .idea
 .DS_Store
 *.suo
