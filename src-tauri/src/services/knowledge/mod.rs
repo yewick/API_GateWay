@@ -1,9 +1,18 @@
-//! 知识库服务：创建私有知识库，上传文档自动向量化并构建索引，
-//! 通过 MCP 协议对外提供检索和 RAG 问答工具（当前为占位实现，具体逻辑后续补充）。
+//! 知识库服务：创建私有知识库、上传文档自动解析分块落库，
+//! 后续接入向量化、索引构建与 MCP 检索/RAG 问答工具。
+//!
+//! 本模块自包含数据模型 / 文档解析 / 文本分块 / Repository / HTTP 端点。
+
+pub mod code_parser;
+mod handlers;
+pub mod models;
+pub mod parser;
+pub mod repository;
+pub mod splitter;
 
 use async_trait::async_trait;
-use axum::routing::get;
-use axum::{Json, Router};
+use axum::routing::{delete, get};
+use axum::Router;
 use std::sync::Arc;
 use crate::AppState;
 use crate::server::router::SharedState;
@@ -28,7 +37,6 @@ impl Service for KnowledgeService {
 
     async fn status(&self, state: &Arc<AppState>) -> ServiceStatus {
         let pool = &state.db.pool;
-        // 查询真实统计（表缺失时兜底为 0，待知识库表落地后自动生效）
         let kb_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM kb_knowledge_bases")
             .fetch_one(pool)
             .await
@@ -57,23 +65,26 @@ impl Service for KnowledgeService {
     }
 
     fn routes(&self, _state: Arc<AppState>) -> Router<SharedState> {
-        // 占位路由：知识库 CRUD / 上传 / 检索 / 问答等具体路由后续补充
         Router::new()
-            .route("/api/kb", get(list_knowledge_bases))
-            .route("/api/kb/status", get(kb_status))
+            .route(
+                "/api/kb",
+                get(handlers::list_knowledge_bases).post(handlers::create_knowledge_base),
+            )
+            .route(
+                "/api/kb/{id}",
+                get(handlers::get_knowledge_base)
+                    .put(handlers::update_knowledge_base)
+                    .delete(handlers::delete_knowledge_base),
+            )
+            .route(
+                "/api/kb/{id}/documents",
+                get(handlers::list_documents).post(handlers::upload_document),
+            )
+            .route(
+                "/api/kb/{id}/documents/{doc_id}",
+                delete(handlers::delete_document),
+            )
+            .route("/api/kb/{id}/stats", get(handlers::kb_stats))
+            .route("/api/kb/status", get(handlers::kb_status))
     }
-}
-
-/// GET /api/kb —— 返回知识库列表（表未建，先返回空列表）
-async fn list_knowledge_bases() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "data": [] }))
-}
-
-async fn kb_status() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "service": "knowledge",
-        "name": "知识库",
-        "registered": true,
-        "note": "知识库功能待实现"
-    }))
 }
