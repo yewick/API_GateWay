@@ -45,6 +45,8 @@ pub struct KbDocument {
     pub file_type: String,
     pub file_size: i64,
     pub content_hash: String,
+    /// 解析后的完整文本（不切块；md/pdf → Markdown，txt → 纯文本，代码 → 源码）
+    pub content: String,
     pub chunk_count: i64,
     pub token_count: i64,
     pub status: String,

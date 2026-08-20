@@ -1,4 +1,4 @@
-use axum::{Router, routing::{get, post}};
+use axum::{Router, extract::DefaultBodyLimit, routing::{get, post}};
 use std::sync::Arc;
 use tauri::AppHandle;
 use tower_http::cors::{Any, CorsLayer};
@@ -31,6 +31,7 @@ pub fn create_router(app: AppHandle, state: Arc<AppState>) -> Router {
         .route("/health", get(handle_health))
         .merge(service_router)
         .layer(cors)
+        .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
         .with_state(shared)
 }
 

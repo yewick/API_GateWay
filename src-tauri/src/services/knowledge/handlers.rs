@@ -3,7 +3,8 @@
 //! 统一从 `State<SharedState>` 取数据库连接池，错误映射为 `(StatusCode, Json)`。
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::Engine;
 use serde_json::{json, Value};
@@ -174,6 +175,7 @@ pub async fn upload_document(
         file_type: parsed.file_type.clone(),
         file_size: bytes.len() as i64,
         content_hash: hash,
+        content: parsed.text.clone(),
         chunk_count: chunks.len() as i64,
         token_count: total_tokens,
         status: "ready".to_string(),
@@ -222,6 +224,27 @@ pub async fn upload_document(
             "chunk_count": chunks.len(),
         })),
     ))
+}
+
+/// GET /api/kb/{id}/documents/{doc_id}/content —— 导出文档完整解析文本（无损 Markdown/原文）
+pub async fn get_document_content(
+    State(shared): State<SharedState>,
+    Path((kb_id, doc_id)): Path<(String, String)>,
+) -> Response {
+    let repo = KbRepository::new(shared.state.db.pool.clone());
+    let doc = match repo.get_document(&doc_id).await {
+        Ok(d) => d,
+        Err(e) => return db_err(e).into_response(),
+    };
+    if doc.kb_id != kb_id {
+        return err(StatusCode::NOT_FOUND, "文档不属于该知识库").into_response();
+    }
+    let ct = if doc.file_type == "markdown" {
+        "text/markdown; charset=utf-8"
+    } else {
+        "text/plain; charset=utf-8"
+    };
+    ([(header::CONTENT_TYPE, ct)], doc.content).into_response()
 }
 
 /// GET /api/kb/status —— 知识库聚合状态

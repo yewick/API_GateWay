@@ -5,8 +5,11 @@
 
 pub mod code_parser;
 mod handlers;
+mod mineru;
 pub mod models;
 pub mod parser;
+pub mod pdf;
+mod pymupdf;
 pub mod repository;
 pub mod splitter;
 
@@ -83,6 +86,10 @@ impl Service for KnowledgeService {
             .route(
                 "/api/kb/{id}/documents/{doc_id}",
                 delete(handlers::delete_document),
+            )
+            .route(
+                "/api/kb/{id}/documents/{doc_id}/content",
+                get(handlers::get_document_content),
             )
             .route("/api/kb/{id}/stats", get(handlers::kb_stats))
             .route("/api/kb/status", get(handlers::kb_status))

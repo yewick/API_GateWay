@@ -151,10 +151,10 @@ impl KbRepository {
     pub async fn create_document(&self, doc: &KbDocument) -> Result<KbDocument, sqlx::Error> {
         sqlx::query(
             "INSERT INTO kb_documents \
-             (id, kb_id, filename, file_path, file_type, file_size, content_hash, \
+             (id, kb_id, filename, file_path, file_type, file_size, content_hash, content, \
               chunk_count, token_count, status, error_message, source_type, source_url, \
               source_path, doc_meta, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&doc.id)
         .bind(&doc.kb_id)
@@ -163,6 +163,7 @@ impl KbRepository {
         .bind(&doc.file_type)
         .bind(doc.file_size)
         .bind(&doc.content_hash)
+        .bind(&doc.content)
         .bind(doc.chunk_count)
         .bind(doc.token_count)
         .bind(&doc.status)

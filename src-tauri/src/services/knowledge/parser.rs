@@ -4,6 +4,8 @@
 //! 二进制/富格式解析需要额外依赖（pdf-extract / docx-rs / calamine 等），方案待定，
 //! 本次对这类格式返回明确错误。
 
+use super::pdf;
+
 /// 解析后的纯文本文档
 #[derive(Debug, Clone)]
 pub struct ParsedDocument {
@@ -17,9 +19,9 @@ pub struct ParsedDocument {
 }
 
 const MARKDOWN_EXTS: &[&str] = &["md", "markdown"];
-/// 暂不支持、需后续实现的二进制/富格式扩展名
+/// 暂不支持、需后续实现的二进制/富格式扩展名（PDF 已单独走 [`super::pdf`] 后端）
 const UNSUPPORTED_EXTS: &[&str] = &[
-    "pdf", "docx", "doc", "pptx", "ppt", "xlsx", "xls", "csv", "html", "htm",
+    "docx", "doc", "pptx", "ppt", "xlsx", "xls", "csv", "html", "htm",
 ];
 
 /// 根据扩展名识别代码文件
@@ -94,11 +96,24 @@ pub fn extension(filename: &str) -> String {
 }
 
 /// 解析文档为纯文本。按扩展名分发：
+/// - pdf → 经 [`super::pdf`] 可插拔后端提取 Markdown（Native 默认）
 /// - txt / md / 代码文件 → 直接按 UTF-8 读取文本
-/// - pdf / docx / pptx / xlsx / csv / html → 返回「未实现」错误（后续补充）
+/// - docx / pptx / xlsx / csv / html → 返回「未实现」错误（后续补充）
 /// - 其他 → 尝试按 UTF-8 文本读取
 pub fn parse_document(filename: &str, content: &[u8]) -> Result<ParsedDocument, String> {
     let ext = extension(filename);
+
+    if ext == "pdf" {
+        let text = pdf::extract_pdf_text(pdf::resolve_backend(), content)?;
+        if text.trim().is_empty() {
+            return Err("无法从该 PDF 提取文本（可能是扫描件/纯图片，OCR 尚未支持）".to_string());
+        }
+        return Ok(ParsedDocument {
+            text,
+            file_type: "markdown".to_string(),
+            language: None,
+        });
+    }
 
     if UNSUPPORTED_EXTS.contains(&ext.as_str()) {
         return Err(format!(
