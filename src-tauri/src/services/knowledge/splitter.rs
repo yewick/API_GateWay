@@ -85,8 +85,13 @@ pub fn split_text(content: &str, config: &SplitConfig, metadata: &ChunkMetadata)
         let line = lines[i];
         let line_chars = line.chars().count();
 
-        // 超长单行：按字符硬切，避免块永远装不下
-        if current.is_empty() && line_chars > target_chars {
+        // 单行超长：先 flush 已累积块，再按字符硬切，避免与 overlap 回退死循环
+        if line_chars > target_chars {
+            if !current.is_empty() {
+                chunks.push(build_chunk(&current, metadata, start, i - 1));
+                current = Vec::new();
+                current_chars = 0;
+            }
             let mut off = 0usize;
             while off < line_chars {
                 let seg: String = line.chars().skip(off).take(target_chars).collect();
@@ -123,6 +128,12 @@ pub fn split_text(content: &str, config: &SplitConfig, metadata: &ChunkMetadata)
             start += tail;
             current = current[tail..].to_vec();
             current_chars = tail_chars;
+            // 行本身过大，overlap 后仍放不下 → 放弃 overlap 另起一块（否则死循环）
+            if current_chars + line_chars > target_chars {
+                current = Vec::new();
+                current_chars = 0;
+                start = i;
+            }
             continue; // 重新处理同一行
         }
 
@@ -395,6 +406,18 @@ mod tests {
         for w in chunks.windows(2) {
             assert!(w[0].metadata.line_end >= w[1].metadata.line_start);
         }
+    }
+
+    #[test]
+    fn test_split_text_oversized_line_terminates() {
+        // 回归：短行 + 超长行曾因 overlap 回退与超长行冲突而死循环/OOM（SIGKILL）
+        let long = "x".repeat(100); // > 32 字符（target_chars）
+        let content = format!("short\n{long}");
+        let chunks = split_text(&content, &cfg(), &ChunkMetadata::default());
+        // 能返回即说明已终止；长行被硬切成多块 + 短行一块
+        assert!(chunks.len() >= 3, "实际 {}", chunks.len());
+        assert!(chunks.iter().any(|c| c.content.contains('x')));
+        assert!(chunks.iter().any(|c| c.content.contains("short")));
     }
 
     #[test]

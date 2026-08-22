@@ -59,3 +59,8 @@ bytes = "1"
 
 # Logging
 log = "0.4"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+roxmltree = "0.21.1"
+csv = "1.4.0"
+html2text = "0.17.1"
+calamine = "0.36.1"

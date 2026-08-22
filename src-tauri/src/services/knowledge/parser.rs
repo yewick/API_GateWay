@@ -1,10 +1,9 @@
-//! 文档解析：将不同格式的文件提取为纯文本。
+//! 文档解析：按扩展名分发，把各格式提取为纯文本/Markdown。
 //!
-//! 本次实现文本/代码类格式（txt / md / 代码文件）；pdf、docx、pptx、xlsx、html 等
-//! 二进制/富格式解析需要额外依赖（pdf-extract / docx-rs / calamine 等），方案待定，
-//! 本次对这类格式返回明确错误。
+//! 支持：pdf（可插拔后端）、docx / xlsx / csv / pptx / html（各解析模块）、
+//! txt / md / 代码文件（UTF-8 直读）。旧版二进制 doc / xls / ppt 暂不支持。
 
-use super::pdf;
+use super::{csv, docx, html, pdf, pptx, xlsx};
 
 /// 解析后的纯文本文档
 #[derive(Debug, Clone)]
@@ -19,10 +18,8 @@ pub struct ParsedDocument {
 }
 
 const MARKDOWN_EXTS: &[&str] = &["md", "markdown"];
-/// 暂不支持、需后续实现的二进制/富格式扩展名（PDF 已单独走 [`super::pdf`] 后端）
-const UNSUPPORTED_EXTS: &[&str] = &[
-    "docx", "doc", "pptx", "ppt", "xlsx", "xls", "csv", "html", "htm",
-];
+/// 旧版二进制（OLE2）格式，暂不支持，返回明确错误（需另存为新格式）
+const UNSUPPORTED_EXTS: &[&str] = &["doc", "xls", "ppt"];
 
 /// 根据扩展名识别代码文件
 pub fn is_code_file(ext: &str) -> bool {
@@ -115,9 +112,19 @@ pub fn parse_document(filename: &str, content: &[u8]) -> Result<ParsedDocument, 
         });
     }
 
+    // 办公/富文本格式 → 各解析模块，产出 Markdown / 纯文本
+    match ext.as_str() {
+        "docx" => return docx::extract_docx(content).map(|t| parsed(t, "markdown")),
+        "xlsx" => return xlsx::extract_xlsx(content).map(|t| parsed(t, "markdown")),
+        "csv" => return csv::extract_csv(content).map(|t| parsed(t, "markdown")),
+        "pptx" => return pptx::extract_pptx(content).map(|t| parsed(t, "text")),
+        "html" | "htm" => return html::extract_html(content).map(|t| parsed(t, "text")),
+        _ => {}
+    }
+
     if UNSUPPORTED_EXTS.contains(&ext.as_str()) {
         return Err(format!(
-            "不支持的文档格式 '.{}'：解析器尚未实现（pdf/docx/pptx/xlsx/csv/html 待后续补充）",
+            "不支持的旧版格式 '.{}'：请另存为 .docx / .xlsx / .pptx 后再上传",
             ext
         ));
     }
@@ -143,6 +150,15 @@ pub fn parse_document(filename: &str, content: &[u8]) -> Result<ParsedDocument, 
         file_type: file_type.to_string(),
         language,
     })
+}
+
+/// 组装结构化解析结果。
+fn parsed(text: String, file_type: &str) -> ParsedDocument {
+    ParsedDocument {
+        text,
+        file_type: file_type.to_string(),
+        language: None,
+    }
 }
 
 #[cfg(test)]
@@ -189,8 +205,76 @@ mod tests {
     #[test]
     fn test_unsupported_format_errors() {
         assert!(parse_document("report.pdf", b"%PDF-1.4").is_err());
-        assert!(parse_document("sheet.xlsx", b"PK\x03\x04").is_err());
+        // 旧版 OLE2 二进制格式（doc/xls/ppt）→ 明确报错
+        assert!(parse_document("sheet.xls", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1").is_err());
+        assert!(parse_document("old.doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1").is_err());
     }
+
+    #[test]
+    fn test_parse_csv() {
+        let doc = parse_document("data.csv", b"a,b\n1,2\n").unwrap();
+        assert_eq!(doc.file_type, "markdown");
+        assert!(doc.text.contains("| a | b |"));
+        assert!(doc.text.contains("| 1 | 2 |"));
+    }
+
+    #[test]
+    fn test_parse_html() {
+        let doc =
+            parse_document("page.html", b"<html><body><h1>Hi</h1><p>there</p></body></html>").unwrap();
+        assert_eq!(doc.file_type, "text");
+        assert!(doc.text.contains("Hi"));
+        assert!(doc.text.contains("there"));
+    }
+
+    #[test]
+    fn test_parse_docx_end_to_end() {
+        let document_xml = r#"<?xml version="1.0"?><w:document xmlns:w="urn:x"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>个人信息</w:t></w:r></w:p><w:p><w:r><w:t>熟练掌握 Spring Boot</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>技术</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Spring</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>框架</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Boot</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>"#;
+        let bytes = zip_with(&[("word/document.xml", document_xml.as_bytes())]);
+        let doc = parse_document("cv.docx", &bytes).unwrap();
+        assert_eq!(doc.file_type, "markdown");
+        assert!(doc.text.contains("# 个人信息"));
+        assert!(doc.text.contains("熟练掌握 Spring Boot"));
+        assert!(doc.text.contains("| 技术 | Spring |"));
+        assert!(doc.text.contains("| 框架 | Boot |"));
+    }
+
+    #[test]
+    fn test_parse_xlsx_end_to_end() {
+        let bytes = zip_with(&[
+            ("[Content_Types].xml", XLSX_CT.as_bytes()),
+            ("_rels/.rels", XLSX_RELS.as_bytes()),
+            ("xl/workbook.xml", XLSX_WB.as_bytes()),
+            ("xl/_rels/workbook.xml.rels", XLSX_WB_RELS.as_bytes()),
+            ("xl/worksheets/sheet1.xml", XLSX_SHEET1.as_bytes()),
+        ]);
+        let doc = parse_document("data.xlsx", &bytes).unwrap();
+        assert_eq!(doc.file_type, "markdown");
+        assert!(doc.text.contains("## Sheet1"));
+        assert!(doc.text.contains("| 技术 | Spring |"));
+        assert!(doc.text.contains("| 框架 | Boot |"));
+    }
+
+    fn zip_with(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write;
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut zw = zip::ZipWriter::new(&mut cursor);
+            let opts = zip::write::SimpleFileOptions::default();
+            for (name, data) in entries {
+                zw.start_file(*name, opts).unwrap();
+                zw.write_all(data).unwrap();
+            }
+            zw.finish().unwrap();
+        }
+        cursor.into_inner()
+    }
+
+    const XLSX_CT: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>"#;
+    const XLSX_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#;
+    const XLSX_WB: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
+    const XLSX_WB_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#;
+    const XLSX_SHEET1: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>技术</t></is></c><c r="B1" t="inlineStr"><is><t>Spring</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>框架</t></is></c><c r="B2" t="inlineStr"><is><t>Boot</t></is></c></row></sheetData></worksheet>"#;
 
     #[test]
     fn test_is_code_file_and_language() {

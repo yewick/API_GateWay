@@ -4,14 +4,20 @@
 //! 本模块自包含数据模型 / 文档解析 / 文本分块 / Repository / HTTP 端点。
 
 pub mod code_parser;
+mod csv;
+mod docx;
 mod handlers;
+mod html;
 mod mineru;
 pub mod models;
 pub mod parser;
 pub mod pdf;
+mod pptx;
 mod pymupdf;
 pub mod repository;
 pub mod splitter;
+mod table;
+mod xlsx;
 
 use async_trait::async_trait;
 use axum::routing::{delete, get};
