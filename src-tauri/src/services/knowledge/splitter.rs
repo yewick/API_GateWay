@@ -7,7 +7,7 @@
 
 use serde::Serialize;
 
-use super::code_parser::Symbol;
+use super::code_parser::{extract_symbols, Symbol};
 use super::parser::ParsedDocument;
 
 /// 分块配置（`chunk_size`/`chunk_overlap` 单位为 token）
@@ -56,10 +56,14 @@ pub fn split_document(parsed: &ParsedDocument, config: &SplitConfig) -> Vec<Chun
     match parsed.file_type.as_str() {
         "markdown" => split_markdown(&parsed.text, config, &base),
         "code" => {
-            // tree-sitter 符号提取尚未接入（见 code_parser.rs），symbols 恒为空，
-            // split_code_by_symbols 内部会回退到 split_text；待接入后改为传入真实符号。
-            let symbols: &[Symbol] = &[];
-            split_code_by_symbols(&parsed.text, symbols, config, &base)
+            // tree-sitter 符号提取：按语言解析真实符号后按符号边界分块；
+            // 未支持的语言返回空 → split_code_by_symbols 内部回退 split_text。
+            let symbols = parsed
+                .language
+                .as_deref()
+                .map(|lang| extract_symbols(lang, &parsed.text))
+                .unwrap_or_default();
+            split_code_by_symbols(&parsed.text, &symbols, config, &base)
         }
         _ => split_text(&parsed.text, config, &base),
     }

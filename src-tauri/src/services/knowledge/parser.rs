@@ -12,8 +12,6 @@ pub struct ParsedDocument {
     /// `text` / `markdown` / `code`（供 splitter 选择分块策略）
     pub file_type: String,
     /// 代码文件的语言名（如 `rust` / `python`），非代码为 `None`
-    // 待 tree-sitter 符号提取接入后用于语言分派，当前尚未读取
-    #[allow(dead_code)]
     pub language: Option<String>,
 }
 
@@ -129,6 +127,13 @@ pub fn parse_document(filename: &str, content: &[u8]) -> Result<ParsedDocument, 
         ));
     }
 
+    // 二进制文件（含 NUL 字节）无法按文本解析，直接报错，避免被 from_utf8_lossy
+    // 解成垃圾文本后落成一条 failed 文档。放在文本回退之前，不影响 pdf/docx/xlsx
+    // 等结构化格式（它们走上面的分支）。
+    if content.contains(&0) {
+        return Err(format!("'{filename}' 是二进制文件，无法解析为文本"));
+    }
+
     let text = String::from_utf8_lossy(content).to_string();
 
     let file_type = if MARKDOWN_EXTS.contains(&ext.as_str()) {
@@ -208,6 +213,15 @@ mod tests {
         // 旧版 OLE2 二进制格式（doc/xls/ppt）→ 明确报错
         assert!(parse_document("sheet.xls", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1").is_err());
         assert!(parse_document("old.doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1").is_err());
+    }
+
+    #[test]
+    fn test_binary_file_errors() {
+        // PNG 魔数 + 数据段 NUL 字节 → 判为二进制并报错，而不是解成垃圾文本
+        let png = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00];
+        assert!(parse_document("icon.png", &png).is_err());
+        // 纯文本不受影响
+        assert!(parse_document("notes.txt", b"plain text").is_ok());
     }
 
     #[test]

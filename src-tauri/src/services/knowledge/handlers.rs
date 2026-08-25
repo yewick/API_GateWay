@@ -2,7 +2,7 @@
 //!
 //! 统一从 `State<SharedState>` 取数据库连接池，错误映射为 `(StatusCode, Json)`。
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -12,8 +12,9 @@ use sha2::{Digest, Sha256};
 
 use crate::server::router::SharedState;
 
+use super::importer;
 use super::models::*;
-use super::{parser, splitter};
+use super::processor::{self, SourceInfo};
 use super::repository::KbRepository;
 
 /// 统一返回类型：成功 = (状态码, JSON)，失败 = (状态码, JSON 错误体)
@@ -155,73 +156,32 @@ pub async fn upload_document(
         ));
     }
 
-    // 4. 解析文档
-    let parsed = parser::parse_document(&input.filename, &bytes)
-        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
-
-    // 5. 分块
-    let chunks = splitter::split_document(&parsed, &splitter::SplitConfig::default());
-
-    // 6. 组装文档 + 切片
-    let now = crate::utils::time::now_iso();
-    let doc_id = uuid::Uuid::new_v4().to_string();
-    let total_tokens: i64 = chunks.iter().map(|c| c.token_count as i64).sum();
-
-    let doc = KbDocument {
-        id: doc_id.clone(),
-        kb_id: kb_id.clone(),
-        filename: input.filename.clone(),
-        file_path: None,
-        file_type: parsed.file_type.clone(),
-        file_size: bytes.len() as i64,
-        content_hash: hash,
-        content: parsed.text.clone(),
-        chunk_count: chunks.len() as i64,
-        token_count: total_tokens,
-        status: "ready".to_string(),
-        error_message: None,
+    // 4. 走 processor 完整流水线（解析→分块→落库→向量化→状态/事件→增量索引）
+    let source = SourceInfo {
         source_type: "upload".to_string(),
         source_url: None,
         source_path: None,
-        doc_meta: "{}".to_string(),
-        created_at: now.clone(),
-        updated_at: now.clone(),
     };
+    let outcome = processor::process_document(
+        &shared.state.db.pool,
+        &kb_id,
+        &input.filename,
+        &bytes,
+        &source,
+        &shared.app,
+    )
+    .await
+    .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
 
-    let kb_chunks: Vec<KbChunk> = chunks
-        .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let meta_json = serde_json::to_string(&c.metadata).unwrap_or_else(|_| "{}".to_string());
-            KbChunk {
-                id: uuid::Uuid::new_v4().to_string(),
-                doc_id: doc_id.clone(),
-                kb_id: kb_id.clone(),
-                chunk_index: i as i64,
-                content: c.content.clone(),
-                token_count: c.token_count as i64,
-                embedding: None,
-                embedding_dim: 0,
-                metadata: meta_json,
-                symbol_name: c.metadata.symbol_name.clone(),
-                symbol_kind: c.metadata.symbol_kind.clone(),
-                created_at: now.clone(),
-            }
-        })
-        .collect();
-
-    // 7. 落库并更新计数
-    let saved_doc = repo.create_document(&doc).await.map_err(db_err)?;
-    repo.insert_chunks_bulk(&kb_chunks).await.map_err(db_err)?;
-    repo.increment_kb_counts(&kb_id, 1, chunks.len() as i64, total_tokens)
-        .await
-        .map_err(db_err)?;
+    let doc = repo.get_document(&outcome.doc_id).await.map_err(db_err)?;
 
     Ok((
         StatusCode::CREATED,
         Json(json!({
-            "document": saved_doc,
-            "chunk_count": chunks.len(),
+            "document": doc,
+            "chunk_count": outcome.chunk_count,
+            "token_count": outcome.token_count,
+            "embedding_dim": outcome.embedding_dim,
         })),
     ))
 }
@@ -274,4 +234,84 @@ pub async fn kb_status(State(shared): State<SharedState>) -> ApiResult {
             "chunks": chunk_count,
         })),
     ))
+}
+
+/// POST /api/kb/{id}/index —— 全量（重）构建 HNSW 索引
+pub async fn build_index(
+    State(shared): State<SharedState>,
+    Path(kb_id): Path<String>,
+) -> ApiResult {
+    let summary = processor::build_index(&shared.app, &shared.state.db.pool, &kb_id)
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok((StatusCode::OK, Json(json!(summary))))
+}
+
+/// GET /api/kb/{id}/index —— 查询索引状态
+pub async fn get_index(
+    State(shared): State<SharedState>,
+    Path(kb_id): Path<String>,
+) -> ApiResult {
+    let summary = processor::get_index_status(&shared.state.db.pool, &kb_id)
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok((StatusCode::OK, Json(json!(summary))))
+}
+
+/// GET /api/kb/{id}/search?query=...&top_k=... —— FTS5 关键词搜索
+pub async fn search_fts(
+    State(shared): State<SharedState>,
+    Path(kb_id): Path<String>,
+    Query(params): Query<SearchParams>,
+) -> ApiResult {
+    let query = params.query.trim().to_string();
+    if query.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "缺少 query 参数"));
+    }
+    let top_k = params.top_k.unwrap_or(10).clamp(1, 100);
+    let repo = KbRepository::new(shared.state.db.pool.clone());
+    let hits = repo
+        .search_fts(&kb_id, &query, top_k)
+        .await
+        .map_err(db_err)?;
+    Ok((StatusCode::OK, Json(json!({ "data": hits }))))
+}
+
+/// POST /api/kb/{id}/sources —— 多源导入（git / url / local_dir）
+pub async fn import_source(
+    State(shared): State<SharedState>,
+    Path(kb_id): Path<String>,
+    Json(input): Json<ImportSourceInput>,
+) -> ApiResult {
+    let summary = importer::import_source(&shared.state.db.pool, &kb_id, input, &shared.app)
+        .await
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    Ok((StatusCode::CREATED, Json(json!(summary))))
+}
+
+/// GET /api/kb/{id}/sources —— 列出导入源
+pub async fn list_sources(
+    State(shared): State<SharedState>,
+    Path(kb_id): Path<String>,
+) -> ApiResult {
+    let repo = KbRepository::new(shared.state.db.pool.clone());
+    let sources = repo.list_sources(&kb_id).await.map_err(db_err)?;
+    Ok((StatusCode::OK, Json(json!({ "data": sources }))))
+}
+
+/// DELETE /api/kb/{id}/sources/{source_id} —— 删除导入源记录
+pub async fn delete_source(
+    State(shared): State<SharedState>,
+    Path((_kb_id, source_id)): Path<(String, String)>,
+) -> ApiResult {
+    let repo = KbRepository::new(shared.state.db.pool.clone());
+    repo.delete_source(&source_id).await.map_err(db_err)?;
+    Ok((StatusCode::OK, Json(json!({ "deleted": source_id }))))
+}
+
+/// 搜索查询参数
+#[derive(serde::Deserialize)]
+pub struct SearchParams {
+    query: String,
+    top_k: Option<i64>,
 }

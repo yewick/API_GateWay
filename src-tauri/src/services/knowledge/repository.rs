@@ -272,6 +272,48 @@ impl KbRepository {
         Ok(())
     }
 
+    /// 关键词搜索（FTS5）：返回按 bm25 排名升序的命中。
+    /// 查询串先做引号转义，避免注入 FTS5 查询语法。
+    pub async fn search_fts(
+        &self,
+        kb_id: &str,
+        query: &str,
+        top_k: i64,
+    ) -> Result<Vec<FtsHit>, sqlx::Error> {
+        let query = query.trim().replace('"', "\"\"");
+        sqlx::query_as::<_, FtsHit>(
+            "SELECT c.id AS chunk_id, c.doc_id, c.content, bm25(kb_chunks_fts) AS rank \
+             FROM kb_chunks_fts JOIN kb_chunks c ON c.id = kb_chunks_fts.chunk_id \
+             WHERE kb_chunks_fts MATCH ? AND c.kb_id = ? ORDER BY rank LIMIT ?",
+        )
+        .bind(query)
+        .bind(kb_id)
+        .bind(top_k)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// 取知识库内已向量化的 chunk（按确定性顺序：created_at, id），返回
+    /// `(chunk_id, 向量)`，供索引构建使用。
+    pub async fn get_chunks_with_embeddings(
+        &self,
+        kb_id: &str,
+    ) -> Result<Vec<(String, Vec<f32>)>, sqlx::Error> {
+        let rows: Vec<(String, Option<Vec<u8>>)> = sqlx::query_as(
+            "SELECT id, embedding FROM kb_chunks \
+             WHERE kb_id = ? AND embedding IS NOT NULL \
+             ORDER BY created_at ASC, id ASC",
+        )
+        .bind(kb_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .filter_map(|(id, emb)| emb.and_then(|b| decode_embedding(&b)).map(|v| (id, v)))
+            .collect())
+    }
+
     // -------------------------------------------------------------------------
     // Conversation History
     // -------------------------------------------------------------------------
@@ -356,6 +398,54 @@ impl KbRepository {
     }
 
     // -------------------------------------------------------------------------
+    // 索引元数据
+    // -------------------------------------------------------------------------
+
+    pub async fn get_index_meta(&self, kb_id: &str) -> Result<Option<KbIndexMeta>, sqlx::Error> {
+        sqlx::query_as::<_, KbIndexMeta>("SELECT * FROM kb_index_meta WHERE kb_id = ?")
+            .bind(kb_id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    /// 插入或更新索引元数据（kb_id 为主键冲突时覆盖）。
+    pub async fn upsert_index_meta(&self, meta: &KbIndexMeta) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO kb_index_meta \
+             (kb_id, index_type, embedding_dim, chunk_count, index_path, built_at, status) \
+             VALUES (?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(kb_id) DO UPDATE SET \
+                 index_type = excluded.index_type, \
+                 embedding_dim = excluded.embedding_dim, \
+                 chunk_count = excluded.chunk_count, \
+                 index_path = excluded.index_path, \
+                 built_at = excluded.built_at, \
+                 status = excluded.status",
+        )
+        .bind(&meta.kb_id)
+        .bind(&meta.index_type)
+        .bind(meta.embedding_dim)
+        .bind(meta.chunk_count)
+        .bind(&meta.index_path)
+        .bind(&meta.built_at)
+        .bind(&meta.status)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 更新知识库索引状态（`none` / `building` / `ready` / `failed`）。
+    pub async fn update_index_status(&self, kb_id: &str, status: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE kb_knowledge_bases SET index_status = ?, updated_at = ? WHERE id = ?")
+            .bind(status)
+            .bind(crate::utils::time::now_iso())
+            .bind(kb_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
     // 统计
     // -------------------------------------------------------------------------
 
@@ -391,4 +481,16 @@ impl KbRepository {
         .await?;
         Ok(())
     }
+}
+
+/// 解码 embedding BLOB（f32 小端字节序）为 `Vec<f32>`。
+fn decode_embedding(bytes: &[u8]) -> Option<Vec<f32>> {
+    if bytes.len() % 4 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 4);
+    for chunk in bytes.chunks_exact(4) {
+        out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Some(out)
 }

@@ -6,13 +6,17 @@
 pub mod code_parser;
 mod csv;
 mod docx;
+mod embedder;
 mod handlers;
 mod html;
+mod importer;
+mod index;
 mod mineru;
 pub mod models;
 pub mod parser;
 pub mod pdf;
 mod pptx;
+mod processor;
 mod pymupdf;
 pub mod repository;
 pub mod splitter;
@@ -99,5 +103,18 @@ impl Service for KnowledgeService {
             )
             .route("/api/kb/{id}/stats", get(handlers::kb_stats))
             .route("/api/kb/status", get(handlers::kb_status))
+            .route(
+                "/api/kb/{id}/index",
+                get(handlers::get_index).post(handlers::build_index),
+            )
+            .route("/api/kb/{id}/search", get(handlers::search_fts))
+            .route(
+                "/api/kb/{id}/sources",
+                get(handlers::list_sources).post(handlers::import_source),
+            )
+            .route(
+                "/api/kb/{id}/sources/{source_id}",
+                delete(handlers::delete_source),
+            )
     }
 }

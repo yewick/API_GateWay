@@ -212,6 +212,45 @@ pub struct SearchResult {
     pub metadata: serde_json::Value,
 }
 
+/// 多源导入输入（`source_type`：git / url / local_dir）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportSourceInput {
+    pub source_type: String,
+    /// git 仓库地址（source_type=git）
+    pub repo_url: Option<String>,
+    /// git 分支
+    pub branch: Option<String>,
+    /// git 访问令牌
+    pub token: Option<String>,
+    /// 网页地址（source_type=url）
+    pub url: Option<String>,
+    /// 本地目录路径（source_type=local_dir）
+    pub dir_path: Option<String>,
+}
+
+/// FTS5 关键词命中（检索端点返回）
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct FtsHit {
+    pub chunk_id: String,
+    pub doc_id: String,
+    pub content: String,
+    /// bm25 排名（越小越相关）
+    pub rank: f64,
+}
+
+/// 索引构建 / 状态摘要
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexSummary {
+    pub kb_id: String,
+    pub status: String,
+    pub index_type: String,
+    pub chunk_count: i64,
+    pub embedding_dim: i64,
+    pub index_path: Option<String>,
+    /// 因缺少向量而跳过的 chunk 数
+    pub skipped: i64,
+}
+
 fn default_top_k() -> usize {
     5
 }
