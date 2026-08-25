@@ -13,6 +13,7 @@ use super::embedder;
 use super::index::{HnswIndex, IndexStore};
 use super::models::*;
 use super::parser;
+use super::pdf;
 use super::repository::KbRepository;
 use super::splitter::{self, SplitConfig};
 
@@ -24,6 +25,7 @@ pub struct SourceInfo {
 }
 
 /// 单文档处理结果。
+#[derive(Debug, serde::Serialize)]
 pub struct ProcessOutcome {
     pub doc_id: String,
     pub chunk_count: usize,
@@ -31,7 +33,8 @@ pub struct ProcessOutcome {
     pub embedding_dim: Option<i64>,
 }
 
-/// 处理一个文档：解析、分块、落库、向量化、更新状态与计数、发送事件、增量索引。
+/// 处理一个文档（解析+入库一体）：解析、分块、落库、向量化、更新状态与计数、发送事件、增量索引。
+/// 供批量导入（git/url/local_dir）使用，自动入库、不做人工预览。
 /// 向量化失败时文档落为 `failed`（chunk 已持久化、embedding=None），并返回 Err。
 pub async fn process_document(
     pool: &SqlitePool,
@@ -39,6 +42,169 @@ pub async fn process_document(
     filename: &str,
     content: &[u8],
     source: &SourceInfo,
+    app: &AppHandle,
+) -> Result<ProcessOutcome, String> {
+    let repo = KbRepository::new(pool.clone());
+
+    // 1. 解析
+    let parsed = parser::parse_document(filename, content, None).await?;
+
+    // 2. 先落一条文档记录（status=processing，content 已就绪，chunk 待入库）
+    let now = crate::utils::time::now_iso();
+    let doc_id = crate::utils::id::new_id();
+    let doc = KbDocument {
+        id: doc_id.clone(),
+        kb_id: kb_id.to_string(),
+        filename: filename.to_string(),
+        file_path: source.source_path.clone(),
+        file_type: parsed.file_type.clone(),
+        file_size: content.len() as i64,
+        content_hash: sha256_hex(content),
+        content: parsed.text.clone(),
+        chunk_count: 0,
+        token_count: 0,
+        status: "processing".to_string(),
+        error_message: None,
+        source_type: source.source_type.clone(),
+        source_url: source.source_url.clone(),
+        source_path: source.source_path.clone(),
+        doc_meta: "{}".to_string(),
+        created_at: now.clone(),
+        updated_at: now.clone(),
+    };
+    repo.create_document(&doc)
+        .await
+        .map_err(|e| format!("创建文档失败: {e}"))?;
+
+    // 3. 分块 → 落库 → 向量化 → 索引 → ready
+    ingest_into_kb(pool, kb_id, &doc_id, &parsed, app).await
+}
+
+/// 上传流水线的后台解析段：解析文档 → 回写 content/file_type → `awaiting_review`。
+/// 进度经 `kb_tasks` 落库并逐次发 `document-progress` 事件；不写切片、不改计数。
+/// `doc_id` 对应的文档已在调用方创建（status=parsing、content 空）。
+pub async fn parse_document_background(
+    pool: &SqlitePool,
+    kb_id: &str,
+    filename: &str,
+    content: &[u8],
+    doc_id: &str,
+    task_id: &str,
+    app: &AppHandle,
+) {
+    let repo = KbRepository::new(pool.clone());
+
+    // 进度通道：解析器上报 → 转发（落库 kb_tasks + 发 document-progress 事件）
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<pdf::ParseProgress>();
+    {
+        let kb = kb_id.to_string();
+        let doc = doc_id.to_string();
+        let task = task_id.to_string();
+        let app = app.clone();
+        let pool = pool.clone();
+        tauri::async_runtime::spawn(async move {
+            let repo = KbRepository::new(pool);
+            while let Some(p) = rx.recv().await {
+                let progress = percent(p.done, p.total);
+                let _ = repo
+                    .update_task_progress(&task, progress, p.done as i64, p.total as i64)
+                    .await;
+                let _ = app.emit(
+                    "document-progress",
+                    serde_json::json!({
+                        "kb_id": kb,
+                        "doc_id": doc,
+                        "task_id": task,
+                        "stage": p.stage,
+                        "progress": progress,
+                        "done": p.done,
+                        "total": p.total,
+                    }),
+                );
+            }
+        });
+    }
+
+    match parser::parse_document(filename, content, Some(tx)).await {
+        Ok(parsed) => {
+            let _ = repo
+                .update_document_content(doc_id, &parsed.text, &parsed.file_type, "awaiting_review")
+                .await;
+            let _ = repo.complete_task(task_id).await;
+            let _ = app.emit(
+                "document-parsed",
+                serde_json::json!({
+                    "kb_id": kb_id,
+                    "doc_id": doc_id,
+                    "status": "awaiting_review",
+                }),
+            );
+        }
+        Err(e) => {
+            let _ = repo.update_document_status(doc_id, "failed", Some(&e)).await;
+            let _ = repo.fail_task(task_id, &e).await;
+            let _ = app.emit(
+                "document-failed",
+                serde_json::json!({
+                    "kb_id": kb_id,
+                    "doc_id": doc_id,
+                    "status": "failed",
+                    "error": e,
+                }),
+            );
+        }
+    }
+}
+
+/// 入库段：把已解析（`awaiting_review`）的文档分块、向量化、增量索引，置 `ready`。
+pub async fn ingest_document(
+    pool: &SqlitePool,
+    kb_id: &str,
+    doc_id: &str,
+    app: &AppHandle,
+) -> Result<ProcessOutcome, String> {
+    let repo = KbRepository::new(pool.clone());
+    let doc = repo
+        .get_document(doc_id)
+        .await
+        .map_err(|e| format!("读取文档失败: {e}"))?;
+    if doc.kb_id != kb_id {
+        return Err("文档不属于该知识库".to_string());
+    }
+    if doc.status != "awaiting_review" {
+        return Err(format!(
+            "文档状态为 {}，不能入库（需为 awaiting_review）",
+            doc.status
+        ));
+    }
+
+    // 用存储的 content/file_type 重构 ParsedDocument（不重复解析）
+    let ext = parser::extension(&doc.filename);
+    let language = if doc.file_type == "code" {
+        parser::determine_language(&ext)
+    } else {
+        None
+    };
+    let parsed = parser::ParsedDocument {
+        text: doc.content.clone(),
+        file_type: doc.file_type.clone(),
+        language,
+    };
+
+    repo.update_document_status(doc_id, "processing", None)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    ingest_into_kb(pool, kb_id, doc_id, &parsed, app).await
+}
+
+/// 对已存在（status=processing、content 已就绪）的文档执行：分块 → 落库 → 向量化 → 索引 → ready。
+/// 向量化失败时文档落为 `failed`（chunk 已持久化、embedding=None），并返回 Err。
+async fn ingest_into_kb(
+    pool: &SqlitePool,
+    kb_id: &str,
+    doc_id: &str,
+    parsed: &parser::ParsedDocument,
     app: &AppHandle,
 ) -> Result<ProcessOutcome, String> {
     let repo = KbRepository::new(pool.clone());
@@ -50,40 +216,16 @@ pub async fn process_document(
         .await
         .map_err(|e| format!("读取知识库失败: {e}"))?;
 
-    // 2. 解析 + 分块
-    let parsed = parser::parse_document(filename, content)?;
+    // 2. 分块
     let config = SplitConfig {
         chunk_size: kb.chunk_size.max(1) as usize,
         chunk_overlap: kb.chunk_overlap.max(0) as usize,
     };
-    let chunks = splitter::split_document(&parsed, &config);
-
-    // 3. 组装文档 + 切片落库（status=processing）
-    let now = crate::utils::time::now_iso();
-    let doc_id = crate::utils::id::new_id();
+    let chunks = splitter::split_document(parsed, &config);
     let total_tokens: i64 = chunks.iter().map(|c| c.token_count as i64).sum();
 
-    let doc = KbDocument {
-        id: doc_id.clone(),
-        kb_id: kb_id.to_string(),
-        filename: filename.to_string(),
-        file_path: source.source_path.clone(),
-        file_type: parsed.file_type.clone(),
-        file_size: content.len() as i64,
-        content_hash: sha256_hex(content),
-        content: parsed.text.clone(),
-        chunk_count: chunks.len() as i64,
-        token_count: total_tokens,
-        status: "processing".to_string(),
-        error_message: None,
-        source_type: source.source_type.clone(),
-        source_url: source.source_url.clone(),
-        source_path: source.source_path.clone(),
-        doc_meta: "{}".to_string(),
-        created_at: now.clone(),
-        updated_at: now.clone(),
-    };
-
+    // 3. 切片落库 + 回写文档 chunk 统计
+    let now = crate::utils::time::now_iso();
     let kb_chunks: Vec<KbChunk> = chunks
         .iter()
         .enumerate()
@@ -92,7 +234,7 @@ pub async fn process_document(
                 serde_json::to_string(&c.metadata).unwrap_or_else(|_| "{}".to_string());
             KbChunk {
                 id: crate::utils::id::new_id(),
-                doc_id: doc_id.clone(),
+                doc_id: doc_id.to_string(),
                 kb_id: kb_id.to_string(),
                 chunk_index: i as i64,
                 content: c.content.clone(),
@@ -107,12 +249,12 @@ pub async fn process_document(
         })
         .collect();
 
-    repo.create_document(&doc)
-        .await
-        .map_err(|e| format!("创建文档失败: {e}"))?;
     repo.insert_chunks_bulk(&kb_chunks)
         .await
         .map_err(|e| format!("写入切片失败: {e}"))?;
+    repo.update_document_chunk_stats(doc_id, chunks.len() as i64, total_tokens)
+        .await
+        .map_err(|e| e.to_string())?;
 
     // 4. 向量化（未配置模型 → 视为失败，文档不可向量检索）
     let model = match kb.embedding_model.clone() {
@@ -120,7 +262,7 @@ pub async fn process_document(
         _ => {
             return finish_failed(
                 &repo,
-                &doc_id,
+                doc_id,
                 kb_id,
                 total_tokens,
                 chunks.len(),
@@ -135,7 +277,7 @@ pub async fn process_document(
     let vecs = match embedder::embed(&texts, &model, kb.embedding_channel_id.as_deref(), &db).await {
         Ok(v) => v,
         Err(e) => {
-            return finish_failed(&repo, &doc_id, kb_id, total_tokens, chunks.len(), e, app).await;
+            return finish_failed(&repo, doc_id, kb_id, total_tokens, chunks.len(), e, app).await;
         }
     };
 
@@ -143,7 +285,7 @@ pub async fn process_document(
     if vecs.len() != kb_chunks.len() {
         return finish_failed(
             &repo,
-            &doc_id,
+            doc_id,
             kb_id,
             total_tokens,
             chunks.len(),
@@ -157,7 +299,7 @@ pub async fn process_document(
     if dim == 0 {
         return finish_failed(
             &repo,
-            &doc_id,
+            doc_id,
             kb_id,
             total_tokens,
             chunks.len(),
@@ -169,7 +311,7 @@ pub async fn process_document(
     if kb.embedding_dim != 0 && kb.embedding_dim != dim {
         return finish_failed(
             &repo,
-            &doc_id,
+            doc_id,
             kb_id,
             total_tokens,
             chunks.len(),
@@ -183,7 +325,7 @@ pub async fn process_document(
         if let Err(e) = repo.update_chunk_embedding(&chunk.id, vec).await {
             return finish_failed(
                 &repo,
-                &doc_id,
+                doc_id,
                 kb_id,
                 total_tokens,
                 chunks.len(),
@@ -206,7 +348,7 @@ pub async fn process_document(
         {
             return finish_failed(
                 &repo,
-                &doc_id,
+                doc_id,
                 kb_id,
                 total_tokens,
                 chunks.len(),
@@ -225,7 +367,7 @@ pub async fn process_document(
     }
 
     // 7. 成功
-    repo.update_document_status(&doc_id, "ready", None)
+    repo.update_document_status(doc_id, "ready", None)
         .await
         .map_err(|e| e.to_string())?;
     repo.increment_kb_counts(kb_id, 1, chunks.len() as i64, total_tokens)
@@ -242,11 +384,19 @@ pub async fn process_document(
     );
 
     Ok(ProcessOutcome {
-        doc_id,
+        doc_id: doc_id.to_string(),
         chunk_count: chunks.len(),
         token_count: total_tokens,
         embedding_dim: Some(dim),
     })
+}
+
+/// 进度百分比：`total=0`（未知）→ 0（前端按不定进度处理）。
+fn percent(done: u64, total: u64) -> i64 {
+    if total == 0 {
+        return 0;
+    }
+    ((done as f64 / total as f64) * 100.0).min(100.0) as i64
 }
 
 /// 向量化失败时的收尾：文档置 failed、计数正常回写、发事件，并返回 Err。

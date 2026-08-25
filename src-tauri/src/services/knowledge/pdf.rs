@@ -3,17 +3,30 @@
 //! 三种后端：
 //! - [`PdfBackend::Native`]：纯 Rust 的 `unpdf`（默认），零外部依赖，原生 CMap/中文解码。
 //! - [`PdfBackend::PyMuPDF`]：Python 子进程调用 pymupdf，保留文档结构（标题/表格/正文）。
-//! - [`PdfBackend::MinerU`]：自托管 MinerU HTTP 服务（待实现，接口已预留）。
+//! - [`PdfBackend::MinerU`]：MinerU 云服务（https://mineru.net），面向扫描件/复杂表格/公式。
 //!
 //! 分发层统一走 [`extract_pdf_text`]，各后端实现 [`PdfExtractor`] trait；
 //! 输出统一经 [`normalize`] 做 NFKC 归一化（修康熙部首/全角/零宽字符）。
 
 use std::str::FromStr;
 
+use async_trait::async_trait;
+use tokio::sync::mpsc::UnboundedSender;
 use unicode_normalization::UnicodeNormalization;
 
 use super::mineru::MinerUExtractor;
 use super::pymupdf::PyMuPdfExtractor;
+
+/// 解析进度（供后台任务落库 / 前端渲染真实进度条；`total = 0` 表示未知 → 不定进度）。
+#[derive(Debug, Clone)]
+pub struct ParseProgress {
+    /// 阶段：`submitting` / `uploading` / `parsing` / `downloading` / `done`
+    pub stage: String,
+    /// 已完成单位（如已解析页数）
+    pub done: u64,
+    /// 总单位（如总页数；0 表示未知）
+    pub total: u64,
+}
 
 /// PDF 解析后端（选择/配置层）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,7 +35,7 @@ pub enum PdfBackend {
     Native,
     /// Python 子进程调用 pymupdf（保留结构）
     PyMuPDF,
-    /// 自托管 MinerU HTTP 服务（待实现）
+    /// MinerU 云服务（https://mineru.net）
     MinerU,
 }
 
@@ -47,17 +60,31 @@ impl FromStr for PdfBackend {
     }
 }
 
-/// PDF 提取器接口：未来新增后端（如 MinerU）只需实现此 trait，分发层零改动。
+/// PDF 提取器接口：未来新增后端只需实现此 trait，分发层零改动。
+#[async_trait]
 pub trait PdfExtractor {
-    /// PDF 字节 → Markdown 文本
-    fn extract(&self, content: &[u8]) -> Result<String, String>;
+    /// PDF 字节 → Markdown 文本。
+    ///
+    /// `progress` 用于上报解析进度（仅 MinerU 等慢后端使用；Native/PyMuPDF 忽略）。
+    async fn extract(
+        &self,
+        filename: &str,
+        content: &[u8],
+        progress: Option<UnboundedSender<ParseProgress>>,
+    ) -> Result<String, String>;
 }
 
 /// Native 后端：`unpdf` 纯 Rust 解析 → Markdown
 pub struct NativeExtractor;
 
+#[async_trait]
 impl PdfExtractor for NativeExtractor {
-    fn extract(&self, content: &[u8]) -> Result<String, String> {
+    async fn extract(
+        &self,
+        _filename: &str,
+        content: &[u8],
+        _progress: Option<UnboundedSender<ParseProgress>>,
+    ) -> Result<String, String> {
         let doc = unpdf::parse_bytes(content).map_err(|e| format!("PDF 解析失败: {e}"))?;
         let opts = unpdf::render::RenderOptions::default();
         unpdf::render::to_markdown(&doc, &opts).map_err(|e| format!("PDF 文本提取失败: {e}"))
@@ -74,11 +101,16 @@ pub fn resolve_backend() -> PdfBackend {
 }
 
 /// PDF → Markdown 文本（统一入口：按后端分发，再统一做 NFKC 归一化）
-pub fn extract_pdf_text(backend: PdfBackend, content: &[u8]) -> Result<String, String> {
+pub async fn extract_pdf_text(
+    backend: PdfBackend,
+    filename: &str,
+    content: &[u8],
+    progress: Option<UnboundedSender<ParseProgress>>,
+) -> Result<String, String> {
     let text = match backend {
-        PdfBackend::Native => NativeExtractor.extract(content),
-        PdfBackend::PyMuPDF => PyMuPdfExtractor.extract(content),
-        PdfBackend::MinerU => MinerUExtractor.extract(content),
+        PdfBackend::Native => NativeExtractor.extract(filename, content, progress).await,
+        PdfBackend::PyMuPDF => PyMuPdfExtractor.extract(filename, content, progress).await,
+        PdfBackend::MinerU => MinerUExtractor.extract(filename, content, progress).await,
     }?;
     Ok(normalize(&text))
 }
@@ -110,14 +142,11 @@ mod tests {
         assert_eq!(PdfBackend::default(), PdfBackend::Native);
     }
 
-    #[test]
-    fn test_unimplemented_backends_error() {
-        assert!(extract_pdf_text(PdfBackend::MinerU, b"whatever").is_err());
-    }
-
-    #[test]
-    fn test_native_invalid_pdf_errors() {
-        assert!(extract_pdf_text(PdfBackend::Native, b"not a real pdf").is_err());
+    #[tokio::test]
+    async fn test_native_invalid_pdf_errors() {
+        assert!(extract_pdf_text(PdfBackend::Native, "x.pdf", b"not a real pdf", None)
+            .await
+            .is_err());
     }
 
     #[test]

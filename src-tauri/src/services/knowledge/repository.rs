@@ -195,12 +195,149 @@ impl KbRepository {
         Ok(())
     }
 
+    /// 回写解析结果（content + file_type），并同时切状态（`awaiting_review`）。
+    pub async fn update_document_content(
+        &self,
+        doc_id: &str,
+        content: &str,
+        file_type: &str,
+        status: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE kb_documents SET content = ?, file_type = ?, status = ?, \
+             error_message = NULL, updated_at = ? WHERE id = ?",
+        )
+        .bind(content)
+        .bind(file_type)
+        .bind(status)
+        .bind(crate::utils::time::now_iso())
+        .bind(doc_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 回写分块后的 chunk 统计（chunk_count + token_count）。
+    pub async fn update_document_chunk_stats(
+        &self,
+        doc_id: &str,
+        chunk_count: i64,
+        token_count: i64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE kb_documents SET chunk_count = ?, token_count = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(chunk_count)
+        .bind(token_count)
+        .bind(crate::utils::time::now_iso())
+        .bind(doc_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn delete_document(&self, doc_id: &str) -> Result<(), sqlx::Error> {
         sqlx::query("DELETE FROM kb_documents WHERE id = ?")
             .bind(doc_id)
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // Task CRUD（kb_tasks：异步处理进度）
+    // -------------------------------------------------------------------------
+
+    pub async fn create_task(&self, task: &KbTask) -> Result<KbTask, sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO kb_tasks \
+             (id, kb_id, doc_id, task_type, status, progress, total_items, done_items, \
+              error_message, created_at, completed_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&task.id)
+        .bind(&task.kb_id)
+        .bind(&task.doc_id)
+        .bind(&task.task_type)
+        .bind(&task.status)
+        .bind(task.progress)
+        .bind(task.total_items)
+        .bind(task.done_items)
+        .bind(&task.error_message)
+        .bind(&task.created_at)
+        .bind(&task.completed_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(task.clone())
+    }
+
+    /// 更新进度（progress = 百分比 0~100；done/total 为原始单位，total=0 表示未知）。
+    pub async fn update_task_progress(
+        &self,
+        task_id: &str,
+        progress: i64,
+        done_items: i64,
+        total_items: i64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE kb_tasks SET progress = ?, done_items = ?, total_items = ? WHERE id = ?",
+        )
+        .bind(progress)
+        .bind(done_items)
+        .bind(total_items)
+        .bind(task_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn complete_task(&self, task_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE kb_tasks SET status = 'done', progress = 100, completed_at = ? WHERE id = ?",
+        )
+        .bind(crate::utils::time::now_iso())
+        .bind(task_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn fail_task(&self, task_id: &str, error: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE kb_tasks SET status = 'failed', error_message = ?, completed_at = ? WHERE id = ?",
+        )
+        .bind(error)
+        .bind(crate::utils::time::now_iso())
+        .bind(task_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_task(&self, task_id: &str) -> Result<KbTask, sqlx::Error> {
+        sqlx::query_as::<_, KbTask>("SELECT * FROM kb_tasks WHERE id = ?")
+            .bind(task_id)
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    /// 取某文档最新的任务（按创建时间倒序）。
+    pub async fn get_latest_task_by_doc(&self, doc_id: &str) -> Result<Option<KbTask>, sqlx::Error> {
+        sqlx::query_as::<_, KbTask>(
+            "SELECT * FROM kb_tasks WHERE doc_id = ? ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(doc_id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub async fn list_tasks_by_kb(&self, kb_id: &str) -> Result<Vec<KbTask>, sqlx::Error> {
+        sqlx::query_as::<_, KbTask>(
+            "SELECT * FROM kb_tasks WHERE kb_id = ? ORDER BY created_at DESC",
+        )
+        .bind(kb_id)
+        .fetch_all(&self.pool)
+        .await
     }
 
     // -------------------------------------------------------------------------

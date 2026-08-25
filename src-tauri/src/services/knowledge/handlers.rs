@@ -14,7 +14,7 @@ use crate::server::router::SharedState;
 
 use super::importer;
 use super::models::*;
-use super::processor::{self, SourceInfo};
+use super::processor;
 use super::repository::KbRepository;
 
 /// 统一返回类型：成功 = (状态码, JSON)，失败 = (状态码, JSON 错误体)
@@ -107,11 +107,18 @@ pub async fn delete_document(
 ) -> ApiResult {
     let repo = KbRepository::new(shared.state.db.pool.clone());
     let doc = repo.get_document(&doc_id).await.map_err(db_err)?;
+    if doc.kb_id != kb_id {
+        return Err(err(StatusCode::NOT_FOUND, "文档不属于该知识库"));
+    }
     repo.delete_chunks_by_doc(&doc_id).await.map_err(db_err)?;
     repo.delete_document(&doc_id).await.map_err(db_err)?;
-    repo.increment_kb_counts(&kb_id, -1, -doc.chunk_count, -doc.token_count)
-        .await
-        .map_err(db_err)?;
+    // 只有「已入库（有切片）」的文档才计入过 doc_count，才需要回减；
+    // parsing / awaiting_review / 解析失败 的文档从未计数（chunk_count=0），不能回减。
+    if doc.chunk_count > 0 {
+        repo.increment_kb_counts(&kb_id, -1, -doc.chunk_count, -doc.token_count)
+            .await
+            .map_err(db_err)?;
+    }
     Ok((StatusCode::OK, Json(json!({ "deleted": doc_id }))))
 }
 
@@ -125,7 +132,8 @@ pub async fn kb_stats(
     Ok((StatusCode::OK, Json(json!(stats))))
 }
 
-/// POST /api/kb/{id}/documents —— 上传文档（base64 内容）→ 解析 → 分块 → 落库
+/// POST /api/kb/{id}/documents —— 上传文档（base64 内容）。
+/// 立即创建文档记录（status=parsing）+ 解析任务，后台解析；返回 `{ document, task_id }`。
 pub async fn upload_document(
     State(shared): State<SharedState>,
     Path(kb_id): Path<String>,
@@ -156,33 +164,101 @@ pub async fn upload_document(
         ));
     }
 
-    // 4. 走 processor 完整流水线（解析→分块→落库→向量化→状态/事件→增量索引）
-    let source = SourceInfo {
+    // 4. 先落一条「解析中」文档记录（content 空，后台解析后回填）
+    let now = crate::utils::time::now_iso();
+    let doc_id = crate::utils::id::new_id();
+    let doc = KbDocument {
+        id: doc_id.clone(),
+        kb_id: kb_id.clone(),
+        filename: input.filename.clone(),
+        file_path: None,
+        file_type: String::new(),
+        file_size: bytes.len() as i64,
+        content_hash: hash,
+        content: String::new(),
+        chunk_count: 0,
+        token_count: 0,
+        status: "parsing".to_string(),
+        error_message: None,
         source_type: "upload".to_string(),
         source_url: None,
         source_path: None,
+        doc_meta: "{}".to_string(),
+        created_at: now.clone(),
+        updated_at: now,
     };
-    let outcome = processor::process_document(
-        &shared.state.db.pool,
-        &kb_id,
-        &input.filename,
-        &bytes,
-        &source,
-        &shared.app,
-    )
-    .await
-    .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    let doc = repo.create_document(&doc).await.map_err(db_err)?;
 
-    let doc = repo.get_document(&outcome.doc_id).await.map_err(db_err)?;
+    // 5. 建解析任务并后台执行
+    let task = KbTask {
+        id: crate::utils::id::new_id(),
+        kb_id: kb_id.clone(),
+        doc_id: Some(doc_id.clone()),
+        task_type: "parse".to_string(),
+        status: "running".to_string(),
+        progress: 0,
+        total_items: 0,
+        done_items: 0,
+        error_message: None,
+        created_at: crate::utils::time::now_iso(),
+        completed_at: None,
+    };
+    let task = repo.create_task(&task).await.map_err(db_err)?;
+
+    let pool = shared.state.db.pool.clone();
+    let app = shared.app.clone();
+    let kb = kb_id.clone();
+    let filename = input.filename.clone();
+    let doc_for_spawn = doc_id.clone();
+    let task_for_spawn = task.id.clone();
+    tauri::async_runtime::spawn(async move {
+        processor::parse_document_background(
+            &pool,
+            &kb,
+            &filename,
+            &bytes,
+            &doc_for_spawn,
+            &task_for_spawn,
+            &app,
+        )
+        .await;
+    });
 
     Ok((
-        StatusCode::CREATED,
+        StatusCode::ACCEPTED,
         Json(json!({
             "document": doc,
-            "chunk_count": outcome.chunk_count,
-            "token_count": outcome.token_count,
-            "embedding_dim": outcome.embedding_dim,
+            "task_id": task.id,
         })),
+    ))
+}
+
+/// POST /api/kb/{id}/documents/{doc_id}/ingest —— 确认入库（分块→向量化→索引→ready）
+pub async fn ingest_document(
+    State(shared): State<SharedState>,
+    Path((kb_id, doc_id)): Path<(String, String)>,
+) -> ApiResult {
+    let outcome =
+        processor::ingest_document(&shared.state.db.pool, &kb_id, &doc_id, &shared.app)
+            .await
+            .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    Ok((StatusCode::OK, Json(json!(outcome))))
+}
+
+/// GET /api/kb/{id}/documents/{doc_id} —— 单文档 + 其最新解析任务进度
+pub async fn get_document(
+    State(shared): State<SharedState>,
+    Path((kb_id, doc_id)): Path<(String, String)>,
+) -> ApiResult {
+    let repo = KbRepository::new(shared.state.db.pool.clone());
+    let doc = repo.get_document(&doc_id).await.map_err(db_err)?;
+    if doc.kb_id != kb_id {
+        return Err(err(StatusCode::NOT_FOUND, "文档不属于该知识库"));
+    }
+    let task = repo.get_latest_task_by_doc(&doc_id).await.map_err(db_err)?;
+    Ok((
+        StatusCode::OK,
+        Json(json!({ "document": doc, "task": task })),
     ))
 }
 

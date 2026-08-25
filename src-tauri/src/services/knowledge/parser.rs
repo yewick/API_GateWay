@@ -3,6 +3,8 @@
 //! 支持：pdf（可插拔后端）、docx / xlsx / csv / pptx / html（各解析模块）、
 //! txt / md / 代码文件（UTF-8 直读）。旧版二进制 doc / xls / ppt 暂不支持。
 
+use tokio::sync::mpsc::UnboundedSender;
+
 use super::{csv, docx, html, pdf, pptx, xlsx};
 
 /// 解析后的纯文本文档
@@ -95,11 +97,16 @@ pub fn extension(filename: &str) -> String {
 /// - txt / md / 代码文件 → 直接按 UTF-8 读取文本
 /// - docx / pptx / xlsx / csv / html → 返回「未实现」错误（后续补充）
 /// - 其他 → 尝试按 UTF-8 文本读取
-pub fn parse_document(filename: &str, content: &[u8]) -> Result<ParsedDocument, String> {
+pub async fn parse_document(
+    filename: &str,
+    content: &[u8],
+    progress: Option<UnboundedSender<pdf::ParseProgress>>,
+) -> Result<ParsedDocument, String> {
     let ext = extension(filename);
 
     if ext == "pdf" {
-        let text = pdf::extract_pdf_text(pdf::resolve_backend(), content)?;
+        let text =
+            pdf::extract_pdf_text(pdf::resolve_backend(), filename, content, progress).await?;
         if text.trim().is_empty() {
             return Err("无法从该 PDF 提取文本（可能是扫描件/纯图片，OCR 尚未支持）".to_string());
         }
@@ -178,74 +185,95 @@ mod tests {
         assert_eq!(extension("noext"), "noext");
     }
 
-    #[test]
-    fn test_parse_markdown() {
-        let doc = parse_document("guide.md", b"# Title\ncontent").unwrap();
+    #[tokio::test]
+    async fn test_parse_markdown() {
+        let doc = parse_document("guide.md", b"# Title\ncontent", None)
+            .await
+            .unwrap();
         assert_eq!(doc.file_type, "markdown");
         assert_eq!(doc.language, None);
         assert_eq!(doc.text, "# Title\ncontent");
     }
 
-    #[test]
-    fn test_parse_rust_code() {
-        let doc = parse_document("main.rs", b"fn main() {}").unwrap();
+    #[tokio::test]
+    async fn test_parse_rust_code() {
+        let doc = parse_document("main.rs", b"fn main() {}", None)
+            .await
+            .unwrap();
         assert_eq!(doc.file_type, "code");
         assert_eq!(doc.language.as_deref(), Some("rust"));
     }
 
-    #[test]
-    fn test_parse_python_code() {
-        let doc = parse_document("app.py", b"def f():\n    pass").unwrap();
+    #[tokio::test]
+    async fn test_parse_python_code() {
+        let doc = parse_document("app.py", b"def f():\n    pass", None)
+            .await
+            .unwrap();
         assert_eq!(doc.file_type, "code");
         assert_eq!(doc.language.as_deref(), Some("python"));
     }
 
-    #[test]
-    fn test_parse_txt() {
-        let doc = parse_document("notes.txt", b"plain text").unwrap();
+    #[tokio::test]
+    async fn test_parse_txt() {
+        let doc = parse_document("notes.txt", b"plain text", None)
+            .await
+            .unwrap();
         assert_eq!(doc.file_type, "text");
         assert_eq!(doc.language, None);
     }
 
-    #[test]
-    fn test_unsupported_format_errors() {
-        assert!(parse_document("report.pdf", b"%PDF-1.4").is_err());
+    #[tokio::test]
+    async fn test_unsupported_format_errors() {
+        assert!(parse_document("report.pdf", b"%PDF-1.4", None).await.is_err());
         // 旧版 OLE2 二进制格式（doc/xls/ppt）→ 明确报错
-        assert!(parse_document("sheet.xls", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1").is_err());
-        assert!(parse_document("old.doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1").is_err());
+        assert!(parse_document("sheet.xls", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", None)
+            .await
+            .is_err());
+        assert!(parse_document("old.doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", None)
+            .await
+            .is_err());
     }
 
-    #[test]
-    fn test_binary_file_errors() {
+    #[tokio::test]
+    async fn test_binary_file_errors() {
         // PNG 魔数 + 数据段 NUL 字节 → 判为二进制并报错，而不是解成垃圾文本
         let png = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00];
-        assert!(parse_document("icon.png", &png).is_err());
+        assert!(parse_document("icon.png", &png, None).await.is_err());
         // 纯文本不受影响
-        assert!(parse_document("notes.txt", b"plain text").is_ok());
+        assert!(parse_document("notes.txt", b"plain text", None)
+            .await
+            .is_ok());
     }
 
-    #[test]
-    fn test_parse_csv() {
-        let doc = parse_document("data.csv", b"a,b\n1,2\n").unwrap();
+    #[tokio::test]
+    async fn test_parse_csv() {
+        let doc = parse_document("data.csv", b"a,b\n1,2\n", None)
+            .await
+            .unwrap();
         assert_eq!(doc.file_type, "markdown");
         assert!(doc.text.contains("| a | b |"));
         assert!(doc.text.contains("| 1 | 2 |"));
     }
 
-    #[test]
-    fn test_parse_html() {
-        let doc =
-            parse_document("page.html", b"<html><body><h1>Hi</h1><p>there</p></body></html>").unwrap();
+    #[tokio::test]
+    async fn test_parse_html() {
+        let doc = parse_document(
+            "page.html",
+            b"<html><body><h1>Hi</h1><p>there</p></body></html>",
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(doc.file_type, "text");
         assert!(doc.text.contains("Hi"));
         assert!(doc.text.contains("there"));
     }
 
-    #[test]
-    fn test_parse_docx_end_to_end() {
+    #[tokio::test]
+    async fn test_parse_docx_end_to_end() {
         let document_xml = r#"<?xml version="1.0"?><w:document xmlns:w="urn:x"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>个人信息</w:t></w:r></w:p><w:p><w:r><w:t>熟练掌握 Spring Boot</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>技术</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Spring</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>框架</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Boot</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>"#;
         let bytes = zip_with(&[("word/document.xml", document_xml.as_bytes())]);
-        let doc = parse_document("cv.docx", &bytes).unwrap();
+        let doc = parse_document("cv.docx", &bytes, None).await.unwrap();
         assert_eq!(doc.file_type, "markdown");
         assert!(doc.text.contains("# 个人信息"));
         assert!(doc.text.contains("熟练掌握 Spring Boot"));
@@ -253,8 +281,8 @@ mod tests {
         assert!(doc.text.contains("| 框架 | Boot |"));
     }
 
-    #[test]
-    fn test_parse_xlsx_end_to_end() {
+    #[tokio::test]
+    async fn test_parse_xlsx_end_to_end() {
         let bytes = zip_with(&[
             ("[Content_Types].xml", XLSX_CT.as_bytes()),
             ("_rels/.rels", XLSX_RELS.as_bytes()),
@@ -262,7 +290,7 @@ mod tests {
             ("xl/_rels/workbook.xml.rels", XLSX_WB_RELS.as_bytes()),
             ("xl/worksheets/sheet1.xml", XLSX_SHEET1.as_bytes()),
         ]);
-        let doc = parse_document("data.xlsx", &bytes).unwrap();
+        let doc = parse_document("data.xlsx", &bytes, None).await.unwrap();
         assert_eq!(doc.file_type, "markdown");
         assert!(doc.text.contains("## Sheet1"));
         assert!(doc.text.contains("| 技术 | Spring |"));

@@ -7,7 +7,10 @@ use std::process::Command;
 
 use serde::Deserialize;
 
-use super::pdf::PdfExtractor;
+use async_trait::async_trait;
+use tokio::sync::mpsc::UnboundedSender;
+
+use super::pdf::{ParseProgress, PdfExtractor};
 
 /// Python 脚本（编译期内嵌，运行时写临时文件）
 const PY_SCRIPT: &str = include_str!("pymupdf_extract.py");
@@ -15,8 +18,14 @@ const PY_SCRIPT: &str = include_str!("pymupdf_extract.py");
 /// PyMuPDF 后端
 pub struct PyMuPdfExtractor;
 
+#[async_trait]
 impl PdfExtractor for PyMuPdfExtractor {
-    fn extract(&self, content: &[u8]) -> Result<String, String> {
+    async fn extract(
+        &self,
+        _filename: &str,
+        content: &[u8],
+        _progress: Option<UnboundedSender<ParseProgress>>,
+    ) -> Result<String, String> {
         let json = run_python(content)?;
         let blocks: Vec<PdfBlock> =
             serde_json::from_str(&json).map_err(|e| format!("PyMuPDF 输出解析失败: {e}"))?;

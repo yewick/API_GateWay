@@ -24,7 +24,7 @@ mod table;
 mod xlsx;
 
 use async_trait::async_trait;
-use axum::routing::{delete, get};
+use axum::routing::{delete, get, post};
 use axum::Router;
 use std::sync::Arc;
 use crate::AppState;
@@ -95,11 +95,15 @@ impl Service for KnowledgeService {
             )
             .route(
                 "/api/kb/{id}/documents/{doc_id}",
-                delete(handlers::delete_document),
+                get(handlers::get_document).delete(handlers::delete_document),
             )
             .route(
                 "/api/kb/{id}/documents/{doc_id}/content",
                 get(handlers::get_document_content),
+            )
+            .route(
+                "/api/kb/{id}/documents/{doc_id}/ingest",
+                post(handlers::ingest_document),
             )
             .route("/api/kb/{id}/stats", get(handlers::kb_stats))
             .route("/api/kb/status", get(handlers::kb_status))
