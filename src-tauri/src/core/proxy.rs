@@ -28,6 +28,7 @@ pub async fn handle_request(
     is_stream: bool,
     request_body: Option<String>,
     trace_id: Option<String>,
+    mode: &str,
 ) -> Result<ProxyResult, (u16, String)> {
     let start = Instant::now();
     let model = body
@@ -79,7 +80,7 @@ pub async fn handle_request(
             channel_name: None,
             model: model.clone(),
             upstream_model: None,
-            mode: "chat".to_string(),
+            mode: mode.to_string(),
             status_code: 451,
             prompt_tokens: 0,
             completion_tokens: 0,
@@ -114,11 +115,40 @@ pub async fn handle_request(
         .await
         .map_err(|e| (500, format!("DB error: {}", e)))?;
     if channels.is_empty() {
+        write_no_channel_log(
+            repo,
+            api_key_id,
+            api_key_name,
+            &model,
+            mode,
+            503,
+            "No available channels",
+            is_stream,
+            request_body.as_deref(),
+            trace_id.as_deref(),
+            start.elapsed().as_millis() as i64,
+        )
+        .await;
         return Err((503, "No available channels".to_string()));
     }
     let selected_channels = Dispatcher::select_channels(&channels, &model);
     if selected_channels.is_empty() {
-        return Err((503, format!("No channel available for model: {}", model)));
+        let msg = format!("No channel available for model: {}", model);
+        write_no_channel_log(
+            repo,
+            api_key_id,
+            api_key_name,
+            &model,
+            mode,
+            503,
+            &msg,
+            is_stream,
+            request_body.as_deref(),
+            trace_id.as_deref(),
+            start.elapsed().as_millis() as i64,
+        )
+        .await;
+        return Err((503, msg));
     }
 
     let request = ProxyRequest {
@@ -180,7 +210,7 @@ pub async fn handle_request(
                     channel_name: Some(channel.name.clone()),
                     model: model.clone(),
                     upstream_model: Some(upstream_model.clone()),
-                    mode: "chat".to_string(),
+                    mode: mode.to_string(),
                     status_code: status as i64,
                     prompt_tokens: usage.as_ref().map(|u| u.prompt_tokens as i64).unwrap_or(0),
                     completion_tokens: usage.as_ref().map(|u| u.completion_tokens as i64).unwrap_or(0),
@@ -239,7 +269,7 @@ pub async fn handle_request(
                     channel_name: Some(channel.name.clone()),
                     model: model.clone(),
                     upstream_model: Some(upstream_model.clone()),
-                    mode: "chat".to_string(),
+                    mode: mode.to_string(),
                     status_code: 502,
                     prompt_tokens: 0,
                     completion_tokens: 0,
@@ -287,6 +317,53 @@ pub async fn handle_request(
             last_error.unwrap_or_else(|| "unknown upstream error".to_string())
         ),
     ))
+}
+
+/// 写一条「无可用渠道」失败日志（503），失败不影响响应（静默吞错）。
+async fn write_no_channel_log(
+    repo: &Arc<Repository>,
+    api_key_id: &str,
+    api_key_name: &str,
+    model: &str,
+    mode: &str,
+    status_code: u16,
+    error_message: &str,
+    is_stream: bool,
+    request_body: Option<&str>,
+    trace_id: Option<&str>,
+    duration_ms: i64,
+) {
+    let log = RequestLog {
+        id: utils::id::new_id(),
+        seq: None,
+        api_key_id: Some(api_key_id.to_string()),
+        api_key_name: Some(api_key_name.to_string()),
+        channel_id: None,
+        channel_name: None,
+        model: model.to_string(),
+        upstream_model: None,
+        mode: mode.to_string(),
+        status_code: status_code as i64,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        duration_ms,
+        error_message: Some(error_message.to_string()),
+        is_stream: if is_stream { 1 } else { 0 },
+        is_retry: 0,
+        created_at: utils::time::now_iso(),
+        request_body: request_body.map(|s| s.to_string()),
+        forward_body: None,
+        response_choices: None,
+        trace_id: trace_id.map(|s| s.to_string()),
+        risk_level: "none".to_string(),
+        risk_score: 0,
+        risk_summary: None,
+        security_action: "none".to_string(),
+        sanitized: 0,
+        blocked_reason: None,
+    };
+    let _ = repo.create_log(&log).await;
 }
 
 /// 读取重试配置（Tauri Store）

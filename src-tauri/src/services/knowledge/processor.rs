@@ -274,7 +274,7 @@ async fn ingest_into_kb(
     };
 
     let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
-    let vecs = match embedder::embed(&texts, &model, kb.embedding_channel_id.as_deref(), &db).await {
+    let vecs = match embedder::embed(&texts, &model, kb.embedding_channel_id.as_deref(), &db, None).await {
         Ok(v) => v,
         Err(e) => {
             return finish_failed(&repo, doc_id, kb_id, total_tokens, chunks.len(), e, app).await;

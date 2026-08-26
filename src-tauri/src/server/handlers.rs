@@ -19,6 +19,7 @@ fn debug_log(msg: &str) {
         .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
 }
 
+use super::auth::key_is_expired;
 use super::router::SharedState;
 use crate::adaptor::{get_adaptor, ProxyRequest};
 use crate::core::dispatcher::Dispatcher;
@@ -73,23 +74,6 @@ struct AuthContext {
     repo: Arc<Repository>,
 }
 
-fn key_is_expired(expires_at: &str) -> bool {
-    if expires_at.is_empty() {
-        return false;
-    }
-    chrono::DateTime::parse_from_rfc3339(expires_at)
-        .map(|expiry| chrono::Utc::now() > expiry)
-        .or_else(|_| {
-            chrono::NaiveDateTime::parse_from_str(expires_at, "%Y-%m-%dT%H:%M:%S%.3fZ")
-                .map(|d| chrono::Utc::now() > d.and_utc())
-        })
-        .or_else(|_| {
-            chrono::NaiveDate::parse_from_str(expires_at, "%Y-%m-%d")
-                .map(|d| chrono::Utc::now() > d.and_hms_opt(23, 59, 59).unwrap().and_utc())
-        })
-        .unwrap_or(false)
-}
-
 async fn authenticate_and_check_quota(
     shared: &SharedState,
     headers: &HeaderMap,
@@ -139,6 +123,50 @@ async fn authenticate_and_check_quota(
     })
 }
 
+/// 写一条「请求到达网关但被拒」的失败日志（401/429/503 等），便于在日志页追踪失败原因。
+/// 失败不影响响应（静默吞错），与成功路径一致。
+async fn write_failed_log(
+    repo: &Repository,
+    api_key_id: Option<&str>,
+    api_key_name: Option<&str>,
+    model: &str,
+    status_code: u16,
+    error_message: &str,
+    request_body: Option<&str>,
+) {
+    let log = RequestLog {
+        id: utils::id::new_id(),
+        seq: None,
+        api_key_id: api_key_id.map(|s| s.to_string()),
+        api_key_name: api_key_name.map(|s| s.to_string()),
+        channel_id: None,
+        channel_name: None,
+        model: model.to_string(),
+        upstream_model: None,
+        mode: "chat".to_string(),
+        status_code: status_code as i64,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        duration_ms: 0,
+        error_message: Some(error_message.to_string()),
+        is_stream: 0,
+        is_retry: 0,
+        created_at: utils::time::now_iso(),
+        request_body: request_body.map(|s| s.to_string()),
+        forward_body: None,
+        response_choices: None,
+        trace_id: None,
+        risk_level: "none".to_string(),
+        risk_score: 0,
+        risk_summary: None,
+        security_action: "none".to_string(),
+        sanitized: 0,
+        blocked_reason: None,
+    };
+    let _ = repo.create_log(&log).await;
+}
+
 // ---------- /v1/chat/completions ----------
 
 pub async fn handle_chat_completions(
@@ -154,41 +182,32 @@ pub async fn handle_chat_completions(
     };
 
     let is_stream = json.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+    let model = json.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
+
+    let repo = Arc::new(Repository::new(shared.state.db.pool.clone()));
 
     // 2. API Key 鉴权
     let auth_header = headers.get("authorization").and_then(|h| h.to_str().ok()).unwrap_or("");
     let api_key = auth_header.strip_prefix("Bearer ").unwrap_or("").trim();
 
     if api_key.is_empty() {
+        write_failed_log(&repo, None, None, &model, 401, "Missing API key", Some(body_str.as_ref())).await;
         return (StatusCode::UNAUTHORIZED, "Missing API key").into_response();
     }
 
-    let repo = Arc::new(Repository::new(shared.state.db.pool.clone()));
     let key_record = match repo.get_api_key_by_key(api_key).await {
         Ok(k) => k,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "Invalid API key").into_response(),
+        Err(_) => {
+            write_failed_log(&repo, None, None, &model, 401, "Invalid API key", Some(body_str.as_ref())).await;
+            return (StatusCode::UNAUTHORIZED, "Invalid API key").into_response();
+        }
     };
 
     // 2.5 过期检查
     if let Some(ref expires_at) = key_record.expires_at {
-        if !expires_at.is_empty() {
-            let expired = chrono::DateTime::parse_from_rfc3339(expires_at)
-                .map(|expiry| chrono::Utc::now() > expiry)
-                .or_else(|_| {
-                    chrono::NaiveDateTime::parse_from_str(expires_at, "%Y-%m-%dT%H:%M:%S%.3fZ")
-                        .map(|d| chrono::Utc::now() > d.and_utc())
-                })
-                .or_else(|_| {
-                    chrono::NaiveDate::parse_from_str(expires_at, "%Y-%m-%d")
-                        .map(|d| {
-                            chrono::Utc::now()
-                                > d.and_hms_opt(23, 59, 59).unwrap().and_utc()
-                        })
-                })
-                .unwrap_or(false);
-            if expired {
-                return error_response(401, "API key has expired");
-            }
+        if key_is_expired(expires_at) {
+            write_failed_log(&repo, Some(&key_record.id), Some(&key_record.name), &model, 401, "API key has expired", Some(body_str.as_ref())).await;
+            return error_response(401, "API key has expired");
         }
     }
 
@@ -196,6 +215,7 @@ pub async fn handle_chat_completions(
     if key_record.quota_limit > 0 {
         let remaining = key_record.quota_limit - key_record.quota_used;
         if remaining <= 0 {
+            write_failed_log(&repo, Some(&key_record.id), Some(&key_record.name), &model, 429, "Quota exceeded", Some(body_str.as_ref())).await;
             return error_response(429, "Quota exceeded");
         }
         // 用请求中的 max_tokens 做最低限度预估
@@ -205,22 +225,20 @@ pub async fn handle_chat_completions(
             .unwrap_or(0);
         let projected = key_record.quota_used.saturating_add(max_tokens);
         if projected > key_record.quota_limit {
-            return error_response(
-                429,
-                &format!(
-                    "Quota exceeded (remaining: {}, max_tokens: {})",
-                    remaining, max_tokens
-                ),
+            let msg = format!(
+                "Quota exceeded (remaining: {}, max_tokens: {})",
+                remaining, max_tokens
             );
+            write_failed_log(&repo, Some(&key_record.id), Some(&key_record.name), &model, 429, &msg, Some(body_str.as_ref())).await;
+            return error_response(429, &msg);
         }
         if remaining < 2000 {
-            return error_response(
-                429,
-                &format!(
-                    "Quota nearly exhausted — remaining {} tokens, at least 2000 required",
-                    remaining
-                ),
+            let msg = format!(
+                "Quota nearly exhausted — remaining {} tokens, at least 2000 required",
+                remaining
             );
+            write_failed_log(&repo, Some(&key_record.id), Some(&key_record.name), &model, 429, &msg, Some(body_str.as_ref())).await;
+            return error_response(429, &msg);
         }
     }
 
@@ -235,7 +253,7 @@ pub async fn handle_chat_completions(
         handle_stream(shared, json, key_record.id, key_record.name, request_body_str, trace_id).await
     } else {
         match proxy::handle_request(&repo, &shared.app, &key_record.id, &key_record.name,
-                                     json, false, Some(request_body_str), trace_id).await {
+                                     json, false, Some(request_body_str), trace_id, "chat").await {
             Ok(result) => (StatusCode::OK, Json(result.body)).into_response(),
             Err((code, msg)) => error_response(code, &msg),
         }
@@ -802,7 +820,7 @@ pub async fn handle_messages(
         handle_messages_stream(shared, auth, openai_body, model, request_body_str, trace_id).await
     } else {
         match proxy::handle_request(&auth.repo, &shared.app, &auth.api_key_id, &auth.api_key_name,
-                                     openai_body, false, Some(request_body_str), trace_id).await {
+                                     openai_body, false, Some(request_body_str), trace_id, "messages").await {
             Ok(result) => {
                 let anthropic_resp = protocol::openai_to_anthropic(&result.body, &model);
                 (StatusCode::from_u16(result.status).unwrap_or(StatusCode::OK), Json(anthropic_resp)).into_response()
@@ -855,7 +873,7 @@ pub async fn handle_responses(
         handle_responses_stream(shared, auth, openai_body, model, request_body_str, trace_id).await
     } else {
         match proxy::handle_request(&auth.repo, &shared.app, &auth.api_key_id, &auth.api_key_name,
-                                     openai_body, false, Some(request_body_str), trace_id).await {
+                                     openai_body, false, Some(request_body_str), trace_id, "responses").await {
             Ok(result) => {
                 let responses_resp = protocol::openai_to_responses(&result.body, &model);
                 (StatusCode::from_u16(result.status).unwrap_or(StatusCode::OK), Json(responses_resp)).into_response()

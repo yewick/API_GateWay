@@ -3,7 +3,7 @@
 //! 统一从 `State<SharedState>` 取数据库连接池，错误映射为 `(StatusCode, Json)`。
 
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::Engine;
@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::db::repository::Repository;
+use crate::server::auth;
 use crate::server::router::SharedState;
 
 use super::embedder;
@@ -53,11 +54,23 @@ pub async fn list_knowledge_bases(State(shared): State<SharedState>) -> ApiResul
     Ok((StatusCode::OK, Json(json!({ "data": kbs }))))
 }
 
-/// POST /api/kb —— 创建知识库
+/// POST /api/kb —— 创建知识库（校验 embedding 配置齐全且有效，否则不落库）
 pub async fn create_knowledge_base(
     State(shared): State<SharedState>,
     Json(input): Json<CreateKbInput>,
 ) -> ApiResult {
+    if input.name.trim().is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "知识库名称不能为空"));
+    }
+    let db = Repository::new(shared.state.db.pool.clone());
+    embedder::validate_embedding_config(
+        &db,
+        input.embedding_model.as_deref(),
+        input.embedding_channel_id.as_deref(),
+    )
+    .await
+    .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+
     let repo = KbRepository::new(shared.state.db.pool.clone());
     let kb = repo.create_kb(&input).await.map_err(db_err)?;
     Ok((StatusCode::CREATED, Json(json!(kb))))
@@ -386,7 +399,7 @@ pub async fn search(
         )
     };
 
-    let vecs = embedder::embed(&[query.clone()], &embedding_model, embedding_channel_id.as_deref(), &db)
+    let vecs = embedder::embed(&[query.clone()], &embedding_model, embedding_channel_id.as_deref(), &db, None)
         .await
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let query_emb = vecs
@@ -417,15 +430,33 @@ pub async fn search(
     Ok((StatusCode::OK, Json(json!({ "data": results }))))
 }
 
-/// POST /api/kb/ask —— RAG 问答（非流式）
+/// POST /api/kb/ask —— RAG 问答（非流式，需真实密钥鉴权）
 pub async fn ask(
     State(shared): State<SharedState>,
+    headers: HeaderMap,
     Json(input): Json<AskInput>,
 ) -> ApiResult {
     let question = input.question.trim().to_string();
     if question.is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "缺少 question 参数"));
     }
+
+    // 鉴权：真实密钥（Bearer/x-api-key），失败返回 401
+    let repo = Repository::new(shared.state.db.pool.clone());
+    let key_record = auth::authenticate(&repo, &headers)
+        .await
+        .map_err(|(code, msg)| {
+            err(
+                StatusCode::from_u16(code).unwrap_or(StatusCode::UNAUTHORIZED),
+                msg,
+            )
+        })?;
+
+    // 配额预检：超出则拒绝
+    if key_record.quota_limit > 0 && key_record.quota_used >= key_record.quota_limit {
+        return Err(err(StatusCode::TOO_MANY_REQUESTS, "配额已用尽"));
+    }
+
     let kb_id = input.kb_id.clone().unwrap_or_default();
     let answer = rag::ask(
         &shared.state.db.pool,
@@ -437,6 +468,7 @@ pub async fn ask(
         false,
         input.history.as_deref(),
         input.context_limit,
+        Some(key_record),
     )
     .await
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;

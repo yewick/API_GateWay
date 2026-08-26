@@ -25,6 +25,8 @@ pub mod splitter;
 mod table;
 mod xlsx;
 
+pub use embedder::validate_embedding_config;
+
 use async_trait::async_trait;
 use axum::routing::{delete, get, post};
 use axum::Router;

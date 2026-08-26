@@ -41,9 +41,16 @@ pub async fn ask(
     mcp_only: bool,
     history: Option<&[ConversationMessage]>,
     context_limit_override: Option<u64>,
+    api_key: Option<ApiKey>,
 ) -> Result<RagAnswer, String> {
     let repo = KbRepository::new(pool.clone());
     let db = Arc::new(Repository::new(pool.clone()));
+
+    // 0. 确定归属密钥：显式传入（HTTP 鉴权）优先，否则内部选一个启用密钥（Tauri 命令路径）
+    let api_key = match api_key {
+        Some(k) => k,
+        None => select_api_key(&db, chat_model).await?,
+    };
 
     // 1. 确定 embedding 模型与指定渠道
     let (embedding_model, embedding_channel_id) = if kb_id.is_empty() {
@@ -62,9 +69,9 @@ pub async fn ask(
         )
     };
 
-    // 2. 向量化 query
+    // 2. 向量化 query（归属到选定密钥，计入日志/配额）
     let vecs =
-        embedder::embed(&[query.to_string()], &embedding_model, embedding_channel_id.as_deref(), db.as_ref())
+        embedder::embed(&[query.to_string()], &embedding_model, embedding_channel_id.as_deref(), db.as_ref(), Some((api_key.id.as_str(), api_key.name.as_str())))
             .await?;
     let query_emb = vecs.into_iter().next().ok_or("向量化返回空结果")?;
 
@@ -114,9 +121,9 @@ pub async fn ask(
         }
     };
 
-    // 5. LLM 生成（内部解析上下文上限、选择密钥、经代理转发）
+    // 5. LLM 生成（解析上下文上限、经代理转发，密钥由上层指定）
     let (body, usage) =
-        chat_completion(&db, app, chat_model, &results, query, &history_vec, context_limit_override)
+        chat_completion(&db, app, &api_key, chat_model, &results, query, &history_vec, context_limit_override)
             .await?;
     let answer = extract_answer(&body).unwrap_or_else(|| "（模型未返回可用回答）".to_string());
 
@@ -148,6 +155,7 @@ pub async fn ask(
 async fn chat_completion(
     db: &Arc<Repository>,
     app: &AppHandle,
+    api_key: &ApiKey,
     model: &str,
     results: &[SearchResult],
     query: &str,
@@ -182,10 +190,9 @@ async fn chat_completion(
         "stream": false,
     });
 
-    // 选择启用（且允许该模型）的 API 密钥，经代理转发（安全扫描 + 渠道调度 + 重试 + 配额 + 日志）
-    let api_key = select_api_key(db, model).await?;
+    // 经代理转发（安全扫描 + 渠道调度 + 重试 + 配额 + 日志），mode="rag"
     let body_str = serde_json::to_string(&body).unwrap_or_default();
-    let result = proxy::handle_request(db, app, &api_key.id, &api_key.name, body, false, Some(body_str), None)
+    let result = proxy::handle_request(db, app, &api_key.id, &api_key.name, body, false, Some(body_str), None, "rag")
         .await
         .map_err(|(code, msg)| format!("RAG 调用失败（{code}）：{msg}"))?;
 

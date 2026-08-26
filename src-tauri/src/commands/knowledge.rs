@@ -4,6 +4,8 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::AppState;
+use crate::db::repository::Repository;
+use crate::services::knowledge::validate_embedding_config;
 use crate::services::knowledge::models::*;
 use crate::services::knowledge::rag;
 use crate::services::knowledge::repository::KbRepository;
@@ -21,6 +23,17 @@ pub async fn create_knowledge_base(
     state: State<'_, Arc<AppState>>,
     input: CreateKbInput,
 ) -> Result<KbKnowledgeBase, String> {
+    if input.name.trim().is_empty() {
+        return Err("知识库名称不能为空".to_string());
+    }
+    let db = Repository::new(state.db.pool.clone());
+    validate_embedding_config(
+        &db,
+        input.embedding_model.as_deref(),
+        input.embedding_channel_id.as_deref(),
+    )
+    .await?;
+
     let repo = KbRepository::new(state.db.pool.clone());
     repo.create_kb(&input).await.map_err(|e| e.to_string())
 }
@@ -44,6 +57,7 @@ pub async fn ask_knowledge_base(
         &chat_model,
         top_k,
         false,
+        None,
         None,
         None,
     )

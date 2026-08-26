@@ -5,15 +5,61 @@
 
 use crate::adaptor::openai::apply_model_mapping;
 use crate::core::dispatcher::Dispatcher;
-use crate::db::models::Channel;
+use crate::db::models::{Channel, RequestLog};
 use crate::db::repository::Repository;
+use crate::utils;
+
+/// Embedding 调用产生的 Token 用量（OpenAI 兼容 `usage` 无 completion）。
+pub struct EmbeddingUsage {
+    pub prompt_tokens: u64,
+    pub total_tokens: u64,
+}
+
+/// 校验知识库创建所需的 embedding 配置：模型与渠道均非空，且所选渠道启用并支持该模型。
+/// 与 [`embed`] 的渠道调度同源（`Dispatcher::select_channels`），不满足返回中文错误。
+pub async fn validate_embedding_config(
+    repo: &Repository,
+    embedding_model: Option<&str>,
+    embedding_channel_id: Option<&str>,
+) -> Result<(), String> {
+    let model = embedding_model
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .ok_or("请选择向量模型（embedding_model）")?;
+    let channel_id = embedding_channel_id
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .ok_or("请选择向量渠道（embedding_channel_id）")?;
+
+    let enabled = repo
+        .get_enabled_channels()
+        .await
+        .map_err(|e| format!("读取启用渠道失败: {e}"))?;
+
+    let channel = enabled
+        .iter()
+        .find(|c| c.id == channel_id)
+        .ok_or("所选向量渠道不存在或未启用，请前往「渠道」配置")?;
+
+    let selected = Dispatcher::select_channels(&enabled, model);
+    if !selected.iter().any(|c| c.id == channel_id) {
+        return Err(format!(
+            "所选向量渠道「{}」不支持模型「{}」，请前往「渠道」配置",
+            channel.name, model
+        ));
+    }
+
+    Ok(())
+}
 
 /// 向量化一批文本。按渠道优先级逐个尝试，任一成功即返回；全败返回错误。
+/// `attribution` 为 `Some((api_key_id, api_key_name))` 时，成功后写一条 `mode="embedding"` 日志并扣配额。
 pub async fn embed(
     texts: &[String],
     model: &str,
     channel_id: Option<&str>,
     repo: &Repository,
+    attribution: Option<(&str, &str)>,
 ) -> Result<Vec<Vec<f32>>, String> {
     let enabled = repo
         .get_enabled_channels()
@@ -48,7 +94,46 @@ pub async fn embed(
     let mut last_err = String::new();
     for channel in &ordered {
         match try_embed_with_channel(texts, model, channel).await {
-            Ok(v) => return Ok(v),
+            Ok((vecs, usage, upstream_model)) => {
+                if let Some((key_id, key_name)) = attribution {
+                    let total = usage.as_ref().map(|u| u.total_tokens as i64).unwrap_or(0);
+                    let log = RequestLog {
+                        id: utils::id::new_id(),
+                        seq: None,
+                        api_key_id: Some(key_id.to_string()),
+                        api_key_name: Some(key_name.to_string()),
+                        channel_id: Some(channel.id.clone()),
+                        channel_name: Some(channel.name.clone()),
+                        model: model.to_string(),
+                        upstream_model: Some(upstream_model),
+                        mode: "embedding".to_string(),
+                        status_code: 200,
+                        prompt_tokens: usage.as_ref().map(|u| u.prompt_tokens as i64).unwrap_or(0),
+                        completion_tokens: 0,
+                        total_tokens: total,
+                        duration_ms: 0,
+                        error_message: None,
+                        is_stream: 0,
+                        is_retry: 0,
+                        created_at: utils::time::now_iso(),
+                        request_body: None,
+                        forward_body: None,
+                        response_choices: None,
+                        trace_id: None,
+                        risk_level: "none".to_string(),
+                        risk_score: 0,
+                        risk_summary: None,
+                        security_action: "none".to_string(),
+                        sanitized: 0,
+                        blocked_reason: None,
+                    };
+                    let _ = repo.create_log(&log).await;
+                    if total > 0 {
+                        let _ = repo.increment_quota(key_id, total).await;
+                    }
+                }
+                return Ok(vecs);
+            }
             Err(e) => last_err = e,
         }
     }
@@ -56,11 +141,12 @@ pub async fn embed(
 }
 
 /// 对单个渠道发起 `/embeddings` 请求并解析结果。
+/// 返回 `(向量列表, Token 用量, 上游真实模型名)`。
 async fn try_embed_with_channel(
     texts: &[String],
     model: &str,
     channel: &Channel,
-) -> Result<Vec<Vec<f32>>, String> {
+) -> Result<(Vec<Vec<f32>>, Option<EmbeddingUsage>, String), String> {
     let base = channel.base_url.trim_end_matches('/');
     let url = format!("{base}/embeddings");
     let body = serde_json::json!({ "model": model, "input": texts });
@@ -69,6 +155,11 @@ async fn try_embed_with_channel(
     let mapping: serde_json::Value =
         serde_json::from_str(&channel.model_mapping).unwrap_or(serde_json::Value::Null);
     let body = apply_model_mapping(&body, &mapping);
+    let upstream_model = mapping
+        .get(model)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| model.to_string());
 
     let client = reqwest::Client::new();
     let resp = client
@@ -92,7 +183,12 @@ async fn try_embed_with_channel(
 
     let json: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("渠道 {} 响应非 JSON: {e}", channel.name))?;
-    parse_embeddings_response(&json).map_err(|e| format!("渠道 {}: {e}", channel.name))
+    let vecs = parse_embeddings_response(&json).map_err(|e| format!("渠道 {}: {e}", channel.name))?;
+    let usage = json.get("usage").map(|u| EmbeddingUsage {
+        prompt_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+    });
+    Ok((vecs, usage, upstream_model))
 }
 
 /// 纯函数：解析 Embeddings 响应 `data[].embedding`，校验所有向量维度一致。
