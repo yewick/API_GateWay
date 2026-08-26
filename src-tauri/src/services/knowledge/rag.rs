@@ -22,13 +22,32 @@ use super::retriever;
 use super::splitter;
 
 /// 默认 Embedding 模型（全局搜索 / 知识库未配置时）
-pub const DEFAULT_EMBEDDING_MODEL: &str = "text-embedding-3-small";
+pub const DEFAULT_EMBEDDING_MODEL: &str = "embedding-3";
 /// 默认上下文上限（token 数，兜底）
 const DEFAULT_CONTEXT_LIMIT: u64 = 32768;
 /// 上下文上限环境变量名
 const CONTEXT_LIMIT_ENV: &str = "YEAPI_KB_CONTEXT_LIMIT";
 /// 最近历史条数（无显式 history 时从 DB 取）
 const RECENT_HISTORY_ROUNDS: usize = 6;
+
+/// 全局（未指定 KB）检索/问答的默认 Embedding 模型：
+/// 优先读 store 的 `knowledge.default_embedding_model`，未配置回退 [`DEFAULT_EMBEDDING_MODEL`]。
+/// 不用环境变量——默认值须前端可调（见 todo §8.1）。
+pub fn default_embedding_model(app: &AppHandle) -> String {
+    use tauri_plugin_store::StoreExt;
+    if let Ok(store) = app.store("settings.json") {
+        if let Some(model) = store
+            .get("knowledge.default_embedding_model")
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+        {
+            let m = model.trim();
+            if !m.is_empty() {
+                return m.to_string();
+            }
+        }
+    }
+    DEFAULT_EMBEDDING_MODEL.to_string()
+}
 
 /// RAG 问答主流程：向量化 query → 检索 → 历史 → 上下文装配 → LLM 生成 → 持久化。
 pub async fn ask(
@@ -54,7 +73,7 @@ pub async fn ask(
 
     // 1. 确定 embedding 模型与指定渠道
     let (embedding_model, embedding_channel_id) = if kb_id.is_empty() {
-        (DEFAULT_EMBEDDING_MODEL.to_string(), None)
+        (default_embedding_model(app), None)
     } else {
         let kb = repo
             .get_kb(kb_id)
@@ -64,7 +83,7 @@ pub async fn ask(
             kb.embedding_model
                 .clone()
                 .filter(|m| !m.trim().is_empty())
-                .unwrap_or_else(|| DEFAULT_EMBEDDING_MODEL.to_string()),
+                .unwrap_or_else(|| default_embedding_model(app)),
             kb.embedding_channel_id.clone(),
         )
     };

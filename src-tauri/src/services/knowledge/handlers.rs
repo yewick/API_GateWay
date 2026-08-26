@@ -387,14 +387,14 @@ pub async fn search(
 
     // 确定 embedding 模型与指定渠道（kb_id 为空 → 全局默认）
     let (embedding_model, embedding_channel_id) = if kb_id.is_empty() {
-        (rag::DEFAULT_EMBEDDING_MODEL.to_string(), None)
+        (rag::default_embedding_model(&shared.app), None)
     } else {
         let kb = repo.get_kb(&kb_id).await.map_err(db_err)?;
         (
             kb.embedding_model
                 .clone()
                 .filter(|m| !m.trim().is_empty())
-                .unwrap_or_else(|| rag::DEFAULT_EMBEDDING_MODEL.to_string()),
+                .unwrap_or_else(|| rag::default_embedding_model(&shared.app)),
             kb.embedding_channel_id.clone(),
         )
     };

@@ -25,7 +25,9 @@ pub mod splitter;
 mod table;
 mod xlsx;
 
-pub use embedder::validate_embedding_config;
+pub use embedder::{embed, validate_embedding_config};
+pub use importer::import_source;
+pub use processor::{build_index, process_document, SourceInfo};
 
 use async_trait::async_trait;
 use axum::routing::{delete, get, post};

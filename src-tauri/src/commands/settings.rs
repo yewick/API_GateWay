@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::services::knowledge::rag::DEFAULT_EMBEDDING_MODEL;
+
 // ---------- 设置读写（基于 Tauri Store） ----------
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -13,6 +15,7 @@ pub struct SettingsResponse {
     pub auto_start: bool,
     pub retry_enabled: bool,
     pub retry_times: i32,
+    pub default_embedding_model: String,
     pub security_enabled: bool,
     pub security_mode: String,
     pub security_scan_request: bool,
@@ -66,6 +69,7 @@ pub async fn get_settings(
         auto_start: get_bool("ui.auto_start", false),
         retry_enabled: get_bool("retry.enabled", true),
         retry_times: get_i32("retry.times", 3),
+        default_embedding_model: get_str("knowledge.default_embedding_model", DEFAULT_EMBEDDING_MODEL),
         security_enabled: get_bool("security.enabled", true),
         security_mode: get_str("security.mode", "audit"),
         security_scan_request: get_bool("security.scan_request", true),
@@ -89,6 +93,7 @@ pub struct SaveSettingsInput {
     pub auto_start: Option<bool>,
     pub retry_enabled: Option<bool>,
     pub retry_times: Option<i32>,
+    pub default_embedding_model: Option<String>,
     pub security_enabled: Option<bool>,
     pub security_mode: Option<String>,
     pub security_scan_request: Option<bool>,
@@ -143,6 +148,9 @@ pub async fn save_settings(
     }
     if let Some(v) = settings.retry_times {
         store.set("retry.times", serde_json::Value::Number((v as i32).into()));
+    }
+    if let Some(ref v) = settings.default_embedding_model {
+        store.set("knowledge.default_embedding_model", serde_json::Value::String(v.clone()));
     }
     if let Some(v) = settings.security_enabled {
         store.set("security.enabled", serde_json::Value::Bool(v));

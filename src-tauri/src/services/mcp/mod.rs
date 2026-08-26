@@ -51,10 +51,15 @@ impl Service for McpService {
 
     fn routes(&self, _state: Arc<AppState>) -> Router<SharedState> {
         Router::new()
-            // Streamable HTTP 端点（JSON-RPC）
-            .route("/mcp", post(handlers::handle_mcp))
-            // 传统 SSE 握手端点
-            .route("/mcp/sse", get(handlers::handle_mcp_sse))
+            // Streamable HTTP（POST）+ SSE 握手（GET）
+            .route("/mcp", post(handlers::handle_mcp).get(handlers::handle_mcp_sse))
+            // 兼容带尾斜杠的客户端
+            .route("/mcp/", post(handlers::handle_mcp).get(handlers::handle_mcp_sse))
+            // 传统 SSE 端点（GET 建立连接，POST 推送 JSON-RPC）
+            .route(
+                "/mcp/sse",
+                get(handlers::handle_mcp_sse).post(handlers::handle_mcp),
+            )
             .route("/mcp/health", get(mcp_health))
     }
 }
@@ -64,6 +69,10 @@ async fn mcp_health() -> Json<serde_json::Value> {
         "service": "mcp",
         "name": "MCP Server",
         "registered": true,
-        "note": "MCP 协议处理待实现"
+        "endpoints": {
+            "streamable_http": "/mcp",
+            "sse": "/mcp/sse"
+        },
+        "tools": handlers::mcp_tools().len()
     }))
 }
