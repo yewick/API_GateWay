@@ -10,12 +10,16 @@ use base64::Engine;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::db::repository::Repository;
 use crate::server::router::SharedState;
 
+use super::embedder;
 use super::importer;
 use super::models::*;
 use super::processor;
+use super::rag;
 use super::repository::KbRepository;
+use super::retriever;
 
 /// 统一返回类型：成功 = (状态码, JSON)，失败 = (状态码, JSON 错误体)
 type ApiResult = Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)>;
@@ -353,6 +357,102 @@ pub async fn search_fts(
     Ok((StatusCode::OK, Json(json!({ "data": hits }))))
 }
 
+/// GET /api/kb/search?kb_id=&query=&top_k=&symbol_kind= —— 混合检索（kb_id 可空=全局）
+pub async fn search(
+    State(shared): State<SharedState>,
+    Query(params): Query<SearchQueryParams>,
+) -> ApiResult {
+    let query = params.query.trim().to_string();
+    if query.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "缺少 query 参数"));
+    }
+    let top_k = params.top_k.unwrap_or(5).clamp(1, 100);
+    let kb_id = params.kb_id.clone().unwrap_or_default();
+    let pool = shared.state.db.pool.clone();
+    let repo = KbRepository::new(pool.clone());
+    let db = Repository::new(pool.clone());
+
+    // 确定 embedding 模型与指定渠道（kb_id 为空 → 全局默认）
+    let (embedding_model, embedding_channel_id) = if kb_id.is_empty() {
+        (rag::DEFAULT_EMBEDDING_MODEL.to_string(), None)
+    } else {
+        let kb = repo.get_kb(&kb_id).await.map_err(db_err)?;
+        (
+            kb.embedding_model
+                .clone()
+                .filter(|m| !m.trim().is_empty())
+                .unwrap_or_else(|| rag::DEFAULT_EMBEDDING_MODEL.to_string()),
+            kb.embedding_channel_id.clone(),
+        )
+    };
+
+    let vecs = embedder::embed(&[query.clone()], &embedding_model, embedding_channel_id.as_deref(), &db)
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let query_emb = vecs
+        .into_iter()
+        .next()
+        .ok_or_else(|| err(StatusCode::INTERNAL_SERVER_ERROR, "向量化返回空结果"))?;
+
+    let mut results = if kb_id.is_empty() {
+        retriever::search_all(&repo, &query, &query_emb, top_k, true).await
+    } else {
+        retriever::hybrid_search(
+            &repo,
+            &kb_id,
+            &query,
+            &query_emb,
+            top_k,
+            retriever::VECTOR_WEIGHT,
+            retriever::KEYWORD_WEIGHT,
+        )
+        .await
+    }
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    if let Some(kind) = params.symbol_kind.as_deref() {
+        results = retriever::filter_by_symbol(results, kind);
+    }
+
+    Ok((StatusCode::OK, Json(json!({ "data": results }))))
+}
+
+/// POST /api/kb/ask —— RAG 问答（非流式）
+pub async fn ask(
+    State(shared): State<SharedState>,
+    Json(input): Json<AskInput>,
+) -> ApiResult {
+    let question = input.question.trim().to_string();
+    if question.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "缺少 question 参数"));
+    }
+    let kb_id = input.kb_id.clone().unwrap_or_default();
+    let answer = rag::ask(
+        &shared.state.db.pool,
+        &shared.app,
+        &kb_id,
+        &question,
+        &input.model,
+        input.top_k,
+        false,
+        input.history.as_deref(),
+        input.context_limit,
+    )
+    .await
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok((StatusCode::OK, Json(json!(answer))))
+}
+
+/// GET /api/kb/{id}/conversations —— 对话历史
+pub async fn list_conversations(
+    State(shared): State<SharedState>,
+    Path(kb_id): Path<String>,
+) -> ApiResult {
+    let repo = KbRepository::new(shared.state.db.pool.clone());
+    let convs = repo.get_conversations(&kb_id).await.map_err(db_err)?;
+    Ok((StatusCode::OK, Json(json!({ "data": convs }))))
+}
+
 /// POST /api/kb/{id}/sources —— 多源导入（git / url / local_dir）
 pub async fn import_source(
     State(shared): State<SharedState>,
@@ -390,4 +490,13 @@ pub async fn delete_source(
 pub struct SearchParams {
     query: String,
     top_k: Option<i64>,
+}
+
+/// 混合检索查询参数（`kb_id` 可空 = 全局；`symbol_kind` 可选过滤）
+#[derive(serde::Deserialize)]
+pub struct SearchQueryParams {
+    kb_id: Option<String>,
+    query: String,
+    top_k: Option<usize>,
+    symbol_kind: Option<String>,
 }

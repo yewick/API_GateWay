@@ -76,6 +76,11 @@ pub fn run() {
             commands::test::send_test_request,
             // 服务状态
             commands::services::get_service_statuses,
+            // 知识库
+            commands::knowledge::get_knowledge_bases,
+            commands::knowledge::create_knowledge_base,
+            commands::knowledge::ask_knowledge_base,
+            commands::knowledge::get_kb_conversations,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

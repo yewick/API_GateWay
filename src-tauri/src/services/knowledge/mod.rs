@@ -18,7 +18,9 @@ pub mod pdf;
 mod pptx;
 mod processor;
 mod pymupdf;
+pub mod rag;
 pub mod repository;
+pub mod retriever;
 pub mod splitter;
 mod table;
 mod xlsx;
@@ -112,6 +114,18 @@ impl Service for KnowledgeService {
                 get(handlers::get_index).post(handlers::build_index),
             )
             .route("/api/kb/{id}/search", get(handlers::search_fts))
+            .route(
+                "/api/kb/search",
+                get(handlers::search),
+            )
+            .route(
+                "/api/kb/ask",
+                post(handlers::ask),
+            )
+            .route(
+                "/api/kb/{id}/conversations",
+                get(handlers::list_conversations),
+            )
             .route(
                 "/api/kb/{id}/sources",
                 get(handlers::list_sources).post(handlers::import_source),

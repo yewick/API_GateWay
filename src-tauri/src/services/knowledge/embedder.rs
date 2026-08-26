@@ -3,6 +3,7 @@
 //! 与聊天 adaptor 不同，本模块直接 POST `{base_url}/embeddings`（adaptor 硬编码
 //! `/chat/completions`，不可复用），仅复用「选渠道 + 取 base_url/api_key」。
 
+use crate::adaptor::openai::apply_model_mapping;
 use crate::core::dispatcher::Dispatcher;
 use crate::db::models::Channel;
 use crate::db::repository::Repository;
@@ -63,6 +64,11 @@ async fn try_embed_with_channel(
     let base = channel.base_url.trim_end_matches('/');
     let url = format!("{base}/embeddings");
     let body = serde_json::json!({ "model": model, "input": texts });
+
+    // 与聊天链路一致：应用渠道 model_mapping，把「面向下游的模型名」翻译为「上游真实模型名」
+    let mapping: serde_json::Value =
+        serde_json::from_str(&channel.model_mapping).unwrap_or(serde_json::Value::Null);
+    let body = apply_model_mapping(&body, &mapping);
 
     let client = reqwest::Client::new();
     let resp = client

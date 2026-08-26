@@ -184,6 +184,9 @@ pub struct AskInput {
     pub deep_research: bool,
     #[serde(default = "default_max_rounds")]
     pub max_rounds: usize,
+    /// 请求级上下文上限覆盖（token 数，>0 时优先于渠道/模型配置）
+    #[serde(default)]
+    pub context_limit: Option<u64>,
 }
 
 /// 会话消息（`AskInput.history` 的组成单元）
@@ -191,6 +194,33 @@ pub struct AskInput {
 pub struct ConversationMessage {
     pub role: String,
     pub content: String,
+}
+
+/// RAG 问答结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RagAnswer {
+    pub answer: String,
+    pub sources: Vec<SearchResult>,
+    pub usage: Option<RagUsage>,
+}
+
+/// RAG 问答 Token 用量（自含，避免依赖 `adaptor::TokenUsage`）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RagUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+}
+
+/// 切片轻量元数据（检索端富化用，不含 `embedding` BLOB，避免把全部向量读进内存）。
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ChunkMeta {
+    pub id: String,
+    pub doc_id: String,
+    pub content: String,
+    pub symbol_name: Option<String>,
+    pub symbol_kind: Option<String>,
+    pub metadata: String,
 }
 
 /// 知识库统计（文档/切片/token 计数）

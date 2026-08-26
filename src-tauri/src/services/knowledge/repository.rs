@@ -353,6 +353,17 @@ impl KbRepository {
         .await
     }
 
+    /// 取知识库切片的轻量元数据（不含 `embedding` BLOB），供检索端按 chunk_id 富化。
+    pub async fn get_chunks_meta(&self, kb_id: &str) -> Result<Vec<ChunkMeta>, sqlx::Error> {
+        sqlx::query_as::<_, ChunkMeta>(
+            "SELECT id, doc_id, content, symbol_name, symbol_kind, metadata \
+             FROM kb_chunks WHERE kb_id = ? ORDER BY chunk_index ASC",
+        )
+        .bind(kb_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
     pub async fn create_chunk(&self, chunk: &KbChunk) -> Result<KbChunk, sqlx::Error> {
         sqlx::query(
             "INSERT INTO kb_chunks \
