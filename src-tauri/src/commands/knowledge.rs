@@ -182,6 +182,23 @@ pub async fn get_kb_document_content(
     })
 }
 
+/// 查看文档切片（前端文档查看器）：按 chunk_index 排序，不含向量 BLOB。
+#[tauri::command]
+pub async fn list_kb_document_chunks(
+    state: State<'_, Arc<AppState>>,
+    kb_id: String,
+    doc_id: String,
+) -> Result<Vec<ChunkView>, String> {
+    let repo = KbRepository::new(state.db.pool.clone());
+    let doc = repo.get_document(&doc_id).await.map_err(|e| e.to_string())?;
+    if doc.kb_id != kb_id {
+        return Err("文档不属于该知识库".to_string());
+    }
+    repo.get_chunks_by_doc(&doc_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// 上传文档：前端只传文件路径，Rust 直读字节（不经过 base64），
 /// 随后与 HTTP 上传走完全相同的解析/去重/建任务管线。
 #[tauri::command]

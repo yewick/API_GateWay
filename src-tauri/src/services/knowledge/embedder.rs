@@ -15,40 +15,35 @@ pub struct EmbeddingUsage {
     pub total_tokens: u64,
 }
 
-/// 校验知识库创建所需的 embedding 配置：模型与渠道均非空，且所选渠道启用并支持该模型。
-/// 与 [`embed`] 的渠道调度同源（`Dispatcher::select_channels`），不满足返回中文错误。
+/// 校验知识库创建所需的 embedding 配置。
+/// 模型/渠道均可留空（对应前端「留空使用默认模型」「自动选择（默认）」）：留空时交由运行时
+/// [`embed`] 按默认模型 + 自动选渠道兜底，与 `rag`/`search_kb` 的回退一致，故仅在显式指定时校验。
 pub async fn validate_embedding_config(
     repo: &Repository,
     embedding_model: Option<&str>,
     embedding_channel_id: Option<&str>,
 ) -> Result<(), String> {
-    let model = embedding_model
+    // 未显式指定渠道：运行时自动选择，无需校验（也无需查询渠道表）
+    let cid = embedding_channel_id
         .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .ok_or("请选择向量模型（embedding_model）")?;
-    let channel_id = embedding_channel_id
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .ok_or("请选择向量渠道（embedding_channel_id）")?;
+        .filter(|s| !s.is_empty());
+    let Some(cid) = cid else {
+        return Ok(());
+    };
+    let _ = embedding_model; // 模型支持性交由运行时 embed() 尝试 + 兜底，此处不校验
 
     let enabled = repo
         .get_enabled_channels()
         .await
         .map_err(|e| format!("读取启用渠道失败: {e}"))?;
 
-    let channel = enabled
+    // 仅校验渠道存在且启用。不校验「渠道支持该模型」：select_channels 匹配的是
+    // 渠道的聊天模型 models 列表（如 glm-4-plus），不含 embedding 模型名，校验必误判；
+    // 运行时 embed() 对显式渠道是无条件优先尝试 + 全渠道兜底，与此处语义应一致。
+    enabled
         .iter()
-        .find(|c| c.id == channel_id)
+        .find(|c| c.id == cid)
         .ok_or("所选向量渠道不存在或未启用，请前往「渠道」配置")?;
-
-    let selected = Dispatcher::select_channels(&enabled, model);
-    if !selected.iter().any(|c| c.id == channel_id) {
-        return Err(format!(
-            "所选向量渠道「{}」不支持模型「{}」，请前往「渠道」配置",
-            channel.name, model
-        ));
-    }
-
     Ok(())
 }
 

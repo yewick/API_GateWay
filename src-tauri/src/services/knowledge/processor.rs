@@ -11,6 +11,7 @@ use crate::db::repository::Repository;
 
 use super::embedder;
 use super::index::{HnswIndex, IndexStore};
+use super::mineru;
 use super::models::*;
 use super::parser;
 use super::pdf;
@@ -46,8 +47,9 @@ pub async fn process_document(
 ) -> Result<ProcessOutcome, String> {
     let repo = KbRepository::new(pool.clone());
 
-    // 1. 解析
-    let parsed = parser::parse_document(filename, content, None).await?;
+    // 1. 解析（MinerU 配置从 settings store 读取，见 todo §8.2）
+    let mineru_cfg = mineru::MinerUConfig::resolve(Some(app));
+    let parsed = parser::parse_document(filename, content, None, Some(mineru_cfg)).await?;
 
     // 2. 先落一条文档记录（status=processing，content 已就绪，chunk 待入库）
     let now = crate::utils::time::now_iso();
@@ -125,7 +127,9 @@ pub async fn parse_document_background(
         });
     }
 
-    match parser::parse_document(filename, content, Some(tx)).await {
+    // MinerU 配置从 settings store 读取（持有 AppHandle，见 todo §8.2）
+    let mineru_cfg = mineru::MinerUConfig::resolve(Some(app));
+    match parser::parse_document(filename, content, Some(tx), Some(mineru_cfg)).await {
         Ok(parsed) => {
             let _ = repo
                 .update_document_content(doc_id, &parsed.text, &parsed.file_type, "awaiting_review")
@@ -273,8 +277,7 @@ async fn ingest_into_kb(
         }
     };
 
-    let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
-    let vecs = match embedder::embed(&texts, &model, kb.embedding_channel_id.as_deref(), &db, None).await {
+    let vecs = match embed_chunks_batched(&chunks, &model, kb.embedding_channel_id.as_deref(), &db).await {
         Ok(v) => v,
         Err(e) => {
             return finish_failed(&repo, doc_id, kb_id, total_tokens, chunks.len(), e, app).await;
@@ -583,4 +586,43 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// 分批 embed 的 token 预算（估算值）。保守取 4096，适配上游 embedding 单数组上限
+/// （如智谱 embedding-2 为 8K token/数组；估算器 ~4 字符/token 对中文偏低，需留余量）。
+const EMBED_BATCH_MAX_TOKENS: usize = 4096;
+/// 分批 embed 的单批条目数上限（embedding-3 单数组最多 64 条，留余量）。
+const EMBED_BATCH_MAX_ITEMS: usize = 16;
+
+/// 按 token 预算 + 条目数上限分批向量化，向量按原顺序拼接（与切片一一对应）。
+/// 整篇文档一次性发送会被部分上游以「参数有误」拒绝（数组超限）。
+async fn embed_chunks_batched(
+    chunks: &[splitter::Chunk],
+    model: &str,
+    channel_id: Option<&str>,
+    db: &Repository,
+) -> Result<Vec<Vec<f32>>, String> {
+    // 1. 切批：达到 token 预算或条目数上限即封批
+    let mut batches: Vec<Vec<String>> = Vec::new();
+    let mut cur: Vec<String> = Vec::new();
+    let mut cur_tokens = 0usize;
+    for c in chunks {
+        cur.push(c.content.clone());
+        cur_tokens += c.token_count.max(1) as usize;
+        if cur_tokens >= EMBED_BATCH_MAX_TOKENS || cur.len() >= EMBED_BATCH_MAX_ITEMS {
+            batches.push(std::mem::take(&mut cur));
+            cur_tokens = 0;
+        }
+    }
+    if !cur.is_empty() {
+        batches.push(cur);
+    }
+
+    // 2. 逐批 embed，按原顺序拼接
+    let mut out: Vec<Vec<f32>> = Vec::with_capacity(chunks.len());
+    for batch in &batches {
+        let vecs = embedder::embed(batch, model, channel_id, db, None).await?;
+        out.extend(vecs);
+    }
+    Ok(out)
 }

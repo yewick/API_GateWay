@@ -122,8 +122,8 @@ export const KnowledgeBasePage = () => {
             </button>
           </div>
         ) : (
-          <Card noPadding className="lg:sticky lg:top-4">
-            <div className="flex items-center justify-between px-3 pt-2">
+          <Card noPadding className="lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between px-3 pt-2 flex-shrink-0">
               <span className="text-xs font-medium text-text-muted">知识库</span>
               <button
                 onClick={() => setKbListCollapsed(true)}
@@ -145,7 +145,7 @@ export const KnowledgeBasePage = () => {
                 description="创建知识库后即可上传文档并开始 RAG 问答"
               />
             ) : (
-              <ul className="p-2 space-y-1">
+              <ul className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1">
                 {kbs.map((kb) => {
                   const idx = indexStatus(kb.index_status);
                   const active = kb.id === selectedId;
@@ -245,7 +245,7 @@ export const KnowledgeBasePage = () => {
 
               {/* Phase B 待办提示 */}
               <p className="text-[11px] text-text-muted leading-relaxed flex-shrink-0">
-                更多能力（索引管理、多源导入 git/url/本地目录、文档内容查看、FTS 关键词与符号过滤、分块参数编辑）将在后续版本提供。
+                更多能力（索引管理、多源导入 git/url/本地目录、FTS 关键词与符号过滤、分块参数编辑）将在后续版本提供。
               </p>
             </>
           )}

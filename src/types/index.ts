@@ -80,6 +80,10 @@ export interface Settings {
   auto_start: boolean;
   retry_enabled: boolean;
   retry_times: number;
+  default_embedding_model: string;
+  mineru_token: string;
+  mineru_base_url: string;
+  mineru_model: string;
   security_enabled: boolean;
   security_mode: string;
   security_scan_request: boolean;
@@ -341,6 +345,16 @@ export interface IndexSummary {
 export interface DocumentContent {
   content: string;
   file_type: string;
+}
+
+/** 切片查看项（文档查看器用，不含向量） */
+export interface KbChunkView {
+  chunk_index: number;
+  content: string;
+  token_count: number;
+  symbol_name: string | null;
+  symbol_kind: string | null;
+  metadata: string;
 }
 
 export interface UploadDocumentResult {

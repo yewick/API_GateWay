@@ -12,6 +12,10 @@ export const knowledgeKeys = {
   list: () => ["knowledge", "list"] as const,
   detail: (id: string) => ["knowledge", "detail", id] as const,
   documents: (kbId: string) => ["knowledge", "documents", kbId] as const,
+  documentContent: (kbId: string, docId: string) =>
+    ["knowledge", "documents", kbId, docId, "content"] as const,
+  documentChunks: (kbId: string, docId: string) =>
+    ["knowledge", "documents", kbId, docId, "chunks"] as const,
   conversations: (kbId: string) => ["knowledge", "conversations", kbId] as const,
   sources: (kbId: string) => ["knowledge", "sources", kbId] as const,
   index: (kbId: string) => ["knowledge", "index", kbId] as const,
@@ -38,6 +42,20 @@ export const useKbDocuments = (kbId: string | null) =>
     queryKey: knowledgeKeys.documents(kbId ?? ""),
     queryFn: () => knowledgeApi.listDocuments(kbId ?? ""),
     enabled: !!kbId,
+  });
+
+export const useKbDocumentContent = (kbId: string | null, docId: string | null) =>
+  useQuery({
+    queryKey: knowledgeKeys.documentContent(kbId ?? "", docId ?? ""),
+    queryFn: () => knowledgeApi.getDocumentContent(kbId ?? "", docId ?? ""),
+    enabled: !!kbId && !!docId,
+  });
+
+export const useKbDocumentChunks = (kbId: string | null, docId: string | null) =>
+  useQuery({
+    queryKey: knowledgeKeys.documentChunks(kbId ?? "", docId ?? ""),
+    queryFn: () => knowledgeApi.listDocumentChunks(kbId ?? "", docId ?? ""),
+    enabled: !!kbId && !!docId,
   });
 
 export const useKbConversations = (kbId: string | null) =>

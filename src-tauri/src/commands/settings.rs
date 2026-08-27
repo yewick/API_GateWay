@@ -16,6 +16,10 @@ pub struct SettingsResponse {
     pub retry_enabled: bool,
     pub retry_times: i32,
     pub default_embedding_model: String,
+    /// MinerU token（空串 → Agent 轻量 API；非空 → Precise API）
+    pub mineru_token: String,
+    pub mineru_base_url: String,
+    pub mineru_model: String,
     pub security_enabled: bool,
     pub security_mode: String,
     pub security_scan_request: bool,
@@ -58,6 +62,19 @@ pub async fn get_settings(
             .map(|v| v as i32)
             .unwrap_or(def)
     };
+    // MinerU 三项：store 优先，环境变量次之（与 MinerUConfig::resolve 的优先级一致）
+    let get_str_env = |key: &str, env_name: &str, def: &str| -> String {
+        store
+            .get(key)
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                std::env::var(env_name)
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .unwrap_or_else(|| def.to_string())
+    };
 
     Ok(SettingsResponse {
         server_port: get_u16("server.port", 8777),
@@ -70,6 +87,13 @@ pub async fn get_settings(
         retry_enabled: get_bool("retry.enabled", true),
         retry_times: get_i32("retry.times", 3),
         default_embedding_model: get_str("knowledge.default_embedding_model", DEFAULT_EMBEDDING_MODEL),
+        mineru_token: get_str_env("knowledge.mineru.token", "YEAPI_MINERU_TOKEN", ""),
+        mineru_base_url: get_str_env(
+            "knowledge.mineru.base_url",
+            "YEAPI_MINERU_BASE_URL",
+            "https://mineru.net",
+        ),
+        mineru_model: get_str_env("knowledge.mineru.model", "YEAPI_MINERU_MODEL", "pipeline"),
         security_enabled: get_bool("security.enabled", true),
         security_mode: get_str("security.mode", "audit"),
         security_scan_request: get_bool("security.scan_request", true),
@@ -94,6 +118,9 @@ pub struct SaveSettingsInput {
     pub retry_enabled: Option<bool>,
     pub retry_times: Option<i32>,
     pub default_embedding_model: Option<String>,
+    pub mineru_token: Option<String>,
+    pub mineru_base_url: Option<String>,
+    pub mineru_model: Option<String>,
     pub security_enabled: Option<bool>,
     pub security_mode: Option<String>,
     pub security_scan_request: Option<bool>,
@@ -151,6 +178,15 @@ pub async fn save_settings(
     }
     if let Some(ref v) = settings.default_embedding_model {
         store.set("knowledge.default_embedding_model", serde_json::Value::String(v.clone()));
+    }
+    if let Some(ref v) = settings.mineru_token {
+        store.set("knowledge.mineru.token", serde_json::Value::String(v.clone()));
+    }
+    if let Some(ref v) = settings.mineru_base_url {
+        store.set("knowledge.mineru.base_url", serde_json::Value::String(v.clone()));
+    }
+    if let Some(ref v) = settings.mineru_model {
+        store.set("knowledge.mineru.model", serde_json::Value::String(v.clone()));
     }
     if let Some(v) = settings.security_enabled {
         store.set("security.enabled", serde_json::Value::Bool(v));

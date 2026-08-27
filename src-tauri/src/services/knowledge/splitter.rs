@@ -153,7 +153,8 @@ pub fn split_text(content: &str, config: &SplitConfig, metadata: &ChunkMetadata)
     chunks
 }
 
-/// Markdown 分块：按标题切段，每段一个 chunk；超大段落递归 split_text。
+/// Markdown 分块：按标题切段，每段一个 chunk；chunk 正文前携带完整标题路径
+/// （祖先标题 + 当前标题）作上下文；纯标题段（无正文）跳过；超大段落递归 split_text。
 pub fn split_markdown(
     content: &str,
     config: &SplitConfig,
@@ -166,12 +167,11 @@ pub fn split_markdown(
     let lines: Vec<&str> = content.split('\n').collect();
     let max_section_chars = config.chunk_size.saturating_mul(4).saturating_mul(2);
 
-    // 收集标题行
-    let mut headings: Vec<(usize, String)> = Vec::new();
+    // 收集 ATX 标题行（#{1,6} 后接空格/行尾），记录层级
+    let mut headings: Vec<(usize, usize, String)> = Vec::new(); // (行号, 层级, 文本)
     for (idx, line) in lines.iter().enumerate() {
-        let t = line.trim_start();
-        if t.starts_with('#') {
-            headings.push((idx, t.trim_start_matches('#').trim().to_string()));
+        if let Some((level, text)) = parse_heading(line) {
+            headings.push((idx, level, text));
         }
     }
 
@@ -179,53 +179,76 @@ pub fn split_markdown(
         return split_text(content, config, metadata);
     }
 
-    // 构建段落：preamble + 每个标题段
-    let mut sections: Vec<(usize, usize, Option<String>)> = Vec::new();
-    if headings[0].0 > 0 {
-        sections.push((0, headings[0].0 - 1, None));
-    }
-    for (h, (start, heading)) in headings.iter().enumerate() {
-        let end = headings
-            .get(h + 1)
-            .map(|(next, _)| next - 1)
-            .unwrap_or(lines.len() - 1);
-        sections.push((*start, end, Some(heading.clone())));
-    }
+    // 标题栈：栈内即当前标题的完整祖先路径（对每个标题维护，含无正文的父标题）
+    let mut stack: Vec<(usize, String)> = Vec::new(); // (层级, 文本)
 
     let mut chunks = Vec::new();
-    for (start, end, heading) in sections {
-        let text = lines[start..=end].join("\n");
-        if text.trim().is_empty() {
+
+    // preamble（首标题之前的内容），无标题
+    if headings[0].0 > 0 {
+        let text = lines[..headings[0].0].join("\n");
+        if !text.trim().is_empty() {
+            chunks.push(Chunk {
+                token_count: token_count(&text),
+                content: text.clone(),
+                metadata: ChunkMetadata {
+                    line_start: 0,
+                    line_end: headings[0].0 - 1,
+                    ..metadata.clone()
+                },
+            });
+        }
+    }
+
+    for (h, (start, level, heading_text)) in headings.iter().enumerate() {
+        let (start, level) = (*start, *level);
+        let body_end = headings
+            .get(h + 1)
+            .map(|(next, _, _)| *next)
+            .unwrap_or(lines.len());
+
+        // 维护标题栈：弹出层级 >= 当前的项，压入当前标题（无论本段是否有正文）
+        while matches!(stack.last(), Some((lv, _)) if *lv >= level) {
+            stack.pop();
+        }
+        stack.push((level, heading_text.clone()));
+
+        // 正文 = 标题行之后、下一标题行之前；纯标题段跳过
+        let body = lines[start + 1..body_end].join("\n");
+        if body.trim().is_empty() {
             continue;
         }
 
-        if text.chars().count() <= max_section_chars {
-            let m = ChunkMetadata {
-                heading: heading.clone(),
-                line_start: start,
-                line_end: end,
-                ..metadata.clone()
-            };
+        // 完整标题路径作为前缀，保证每个 chunk 自含层级上下文
+        let header: String = stack
+            .iter()
+            .map(|(lv, t)| format!("{} {}", "#".repeat(*lv), t))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let full = format!("{header}\n{body}");
+        if full.chars().count() <= max_section_chars {
             chunks.push(Chunk {
-                content: text.clone(),
-                token_count: token_count(&text),
-                metadata: m,
+                token_count: token_count(&full),
+                content: full,
+                metadata: ChunkMetadata {
+                    heading: Some(heading_text.clone()),
+                    line_start: start,
+                    line_end: body_end.saturating_sub(1),
+                    ..metadata.clone()
+                },
             });
         } else {
-            // 超大段落：递归 split_text，标题作为前缀
-            let prefix = heading
-                .as_ref()
-                .map(|h| format!("# {}\n", h))
-                .unwrap_or_default();
-            for c in split_text(&text, config, metadata) {
-                let content = format!("{}{}", prefix, c.content);
+            // 超大段落：递归 split_text，完整标题路径作前缀
+            for c in split_text(&body, config, metadata) {
+                let content = format!("{header}\n{}", c.content);
                 chunks.push(Chunk {
                     token_count: token_count(&content),
                     content,
                     metadata: ChunkMetadata {
-                        heading: heading.clone(),
-                        line_start: start + c.metadata.line_start,
-                        line_end: start + c.metadata.line_end,
+                        heading: Some(heading_text.clone()),
+                        line_start: start + 1 + c.metadata.line_start,
+                        line_end: start + 1 + c.metadata.line_end,
                         ..metadata.clone()
                     },
                 });
@@ -234,6 +257,21 @@ pub fn split_markdown(
     }
 
     chunks
+}
+
+/// 解析 ATX 标题行：`#{1,6}` 后接空格/制表符或行尾（排除 `#hashtag`、`#!` 等误判）。
+/// 返回 `(层级, 标题文本)`，非标题行返回 `None`。
+fn parse_heading(line: &str) -> Option<(usize, String)> {
+    let t = line.trim_start();
+    let hashes = t.chars().take_while(|&c| c == '#').count();
+    if hashes == 0 || hashes > 6 {
+        return None;
+    }
+    let rest = &t[hashes..];
+    if !rest.is_empty() && !rest.starts_with(' ') && !rest.starts_with('\t') {
+        return None;
+    }
+    Some((hashes, rest.trim().to_string()))
 }
 
 /// 代码按符号边界分块：每个符号一个完整 chunk，未覆盖行归为孤儿块，按行号排序。
@@ -431,6 +469,39 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].metadata.heading.as_deref(), Some("标题一"));
         assert_eq!(chunks[1].metadata.heading.as_deref(), Some("标题二"));
+    }
+
+    #[test]
+    fn test_split_markdown_nested_skips_title_only() {
+        // 父标题无正文（紧接子标题）→ 不再产出「只有标题没有描述」的 chunk
+        let content = "# 父标题\n## 子标题\n正文内容";
+        let chunks = split_markdown(content, &cfg(), &ChunkMetadata::default());
+        assert_eq!(chunks.len(), 1, "实际 {:?}", chunks.len());
+        assert_eq!(chunks[0].metadata.heading.as_deref(), Some("子标题"));
+        // 叶子 chunk 携带祖先标题上下文
+        assert!(chunks[0].content.contains("# 父标题"));
+        assert!(chunks[0].content.contains("## 子标题"));
+        assert!(chunks[0].content.contains("正文内容"));
+    }
+
+    #[test]
+    fn test_split_markdown_heading_detection_strict() {
+        // `#hashtag`（# 后无空格）不是标题 → 回退 split_text
+        let content = "#hashtag\n正文";
+        let chunks = split_markdown(content, &cfg(), &ChunkMetadata::default());
+        assert!(!chunks.is_empty());
+        assert!(chunks.iter().all(|c| c.metadata.heading.is_none()));
+    }
+
+    #[test]
+    fn test_split_markdown_preamble_kept() {
+        // 首标题前的 preamble 独立成块（无标题元数据）
+        let content = "开头说明\n\n# 标题\n正文";
+        let chunks = split_markdown(content, &cfg(), &ChunkMetadata::default());
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].content.contains("开头说明"));
+        assert!(chunks[0].metadata.heading.is_none());
+        assert_eq!(chunks[1].metadata.heading.as_deref(), Some("标题"));
     }
 
     #[test]

@@ -67,6 +67,7 @@ export const REAL_COMMANDS = new Set<string>([
   "list_kb_documents",
   "get_kb_document",
   "get_kb_document_content",
+  "list_kb_document_chunks",
   "upload_kb_document",
   "ingest_kb_document",
   "delete_kb_document",
@@ -186,6 +187,7 @@ const emptyFallback = (cmd: string): Promise<any> => {
     cmd === "get_knowledge_bases" ||
     cmd === "get_kb_conversations" ||
     cmd === "list_kb_documents" ||
+    cmd === "list_kb_document_chunks" ||
     cmd === "search_kb" ||
     cmd === "list_kb_sources"
   ) {

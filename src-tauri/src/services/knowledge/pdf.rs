@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc::UnboundedSender;
 use unicode_normalization::UnicodeNormalization;
 
-use super::mineru::MinerUExtractor;
+use super::mineru::{MinerUConfig, MinerUExtractor};
 use super::pymupdf::PyMuPdfExtractor;
 
 /// 解析进度（供后台任务落库 / 前端渲染真实进度条；`total = 0` 表示未知 → 不定进度）。
@@ -100,17 +100,25 @@ pub fn resolve_backend() -> PdfBackend {
         .unwrap_or_default()
 }
 
-/// PDF → Markdown 文本（统一入口：按后端分发，再统一做 NFKC 归一化）
+/// PDF → Markdown 文本（统一入口：按后端分发，再统一做 NFKC 归一化）。
+/// `mineru_cfg` 为调用方（持有 AppHandle）解析好的 MinerU 配置；`None` 时 MinerU 后端
+/// 回退环境变量/默认值（[`MinerUConfig::resolve`]）。
 pub async fn extract_pdf_text(
     backend: PdfBackend,
     filename: &str,
     content: &[u8],
     progress: Option<UnboundedSender<ParseProgress>>,
+    mineru_cfg: Option<MinerUConfig>,
 ) -> Result<String, String> {
     let text = match backend {
         PdfBackend::Native => NativeExtractor.extract(filename, content, progress).await,
         PdfBackend::PyMuPDF => PyMuPdfExtractor.extract(filename, content, progress).await,
-        PdfBackend::MinerU => MinerUExtractor.extract(filename, content, progress).await,
+        PdfBackend::MinerU => {
+            let cfg = mineru_cfg.unwrap_or_else(|| MinerUConfig::resolve(None));
+            MinerUExtractor::new(cfg)
+                .extract(filename, content, progress)
+                .await
+        }
     }?;
     Ok(normalize(&text))
 }
@@ -144,9 +152,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_native_invalid_pdf_errors() {
-        assert!(extract_pdf_text(PdfBackend::Native, "x.pdf", b"not a real pdf", None)
-            .await
-            .is_err());
+        assert!(
+            extract_pdf_text(PdfBackend::Native, "x.pdf", b"not a real pdf", None, None)
+                .await
+                .is_err()
+        );
     }
 
     #[test]

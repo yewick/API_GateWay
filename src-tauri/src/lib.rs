@@ -95,6 +95,7 @@ pub fn run() {
             commands::knowledge::list_kb_documents,
             commands::knowledge::get_kb_document,
             commands::knowledge::get_kb_document_content,
+            commands::knowledge::list_kb_document_chunks,
             commands::knowledge::upload_kb_document,
             commands::knowledge::ingest_kb_document,
             commands::knowledge::delete_kb_document,

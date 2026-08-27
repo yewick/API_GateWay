@@ -44,8 +44,8 @@ export function SearchPanel({ kbId }: SearchPanelProps) {
   };
 
   return (
-    <div>
-      <div className="flex items-end gap-3 mb-5">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex items-end gap-3 mb-5 flex-shrink-0">
         <div className="flex-1">
           <Input
             label="混合检索"
@@ -84,7 +84,7 @@ export function SearchPanel({ kbId }: SearchPanelProps) {
       ) : results.length === 0 ? (
         <EmptyState icon={Search} title="无匹配结果" description="未找到相关内容，尝试更换关键词" />
       ) : (
-        <ul className="space-y-3">
+        <ul className="flex-1 min-h-0 overflow-y-auto space-y-3">
           {results.map((r, i) => (
             <li
               key={r.chunk_id}

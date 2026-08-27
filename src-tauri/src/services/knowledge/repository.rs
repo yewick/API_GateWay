@@ -364,6 +364,17 @@ impl KbRepository {
         .await
     }
 
+    /// 取单个文档的切片（前端文档查看器用，不含 `embedding` BLOB，按 chunk_index 排序）。
+    pub async fn get_chunks_by_doc(&self, doc_id: &str) -> Result<Vec<ChunkView>, sqlx::Error> {
+        sqlx::query_as::<_, ChunkView>(
+            "SELECT chunk_index, content, token_count, symbol_name, symbol_kind, metadata \
+             FROM kb_chunks WHERE doc_id = ? ORDER BY chunk_index ASC",
+        )
+        .bind(doc_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
     pub async fn create_chunk(&self, chunk: &KbChunk) -> Result<KbChunk, sqlx::Error> {
         sqlx::query(
             "INSERT INTO kb_chunks \

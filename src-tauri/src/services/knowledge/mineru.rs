@@ -5,9 +5,9 @@
 //! - Agent 轻量 API（无 token，按 IP 限流，≤10MB/≤20 页）：返回 `markdown_url` 直接下载 md。
 //! - Precise API（需 token，≤200MB/≤200 页）：返回 `full_zip_url`，zip 内含 `full.md` + 结构化 JSON。
 //!
-//! 配置（环境变量，[`MinerUConfig::resolve`] 为未来接设置界面的唯一扩展点）：
-//! `YEAPI_MINERU_TOKEN`（有值→Precise，无→Agent）、`YEAPI_MINERU_BASE_URL`（默认 https://mineru.net）、
-//! `YEAPI_MINERU_MODEL`（Precise 用，默认 pipeline）。
+//! 配置（[`MinerUConfig::resolve`]）：store（settings.json 的 `knowledge.mineru.*`）优先，
+//! 环境变量 `YEAPI_MINERU_TOKEN`（有值→Precise，无→Agent）、`YEAPI_MINERU_BASE_URL`（默认
+//! https://mineru.net）、`YEAPI_MINERU_MODEL`（Precise 用，默认 pipeline）次之，便于无前端时临时配置。
 
 use std::error::Error;
 use std::time::Duration;
@@ -26,36 +26,64 @@ const DOWNLOAD_RETRIES: usize = 3;
 /// 重试退避基数（第 n 次重试延迟 n 秒）。
 const RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
 
-/// MinerU 云服务后端
-pub struct MinerUExtractor;
+/// MinerU 云服务后端（配置由构造时注入，见 [`MinerUConfig::resolve`]）。
+pub struct MinerUExtractor {
+    cfg: MinerUConfig,
+}
 
-/// MinerU 配置（从环境变量解析）。
-struct MinerUConfig {
+/// MinerU 配置：store 优先 → 环境变量 → 默认值。
+#[derive(Debug, Clone)]
+pub struct MinerUConfig {
     /// 有值 → Precise API；无 → Agent 轻量 API
-    token: Option<String>,
-    base_url: String,
-    model_version: String,
+    pub token: Option<String>,
+    pub base_url: String,
+    pub model_version: String,
 }
 
 impl MinerUConfig {
-    fn resolve() -> Self {
-        let token = std::env::var("YEAPI_MINERU_TOKEN")
-            .ok()
-            .filter(|s| !s.trim().is_empty());
-        let base_url = std::env::var("YEAPI_MINERU_BASE_URL")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
+    /// 解析配置：store 键 `knowledge.mineru.token / base_url / model` 优先（前端可调），
+    /// `YEAPI_MINERU_TOKEN / BASE_URL / MODEL` 环境变量次之（无前端时临时配置），最后默认值。
+    pub fn resolve(app: Option<&tauri::AppHandle>) -> Self {
+        // store 读取（无 AppHandle 或 store 不可用时静默跳过）
+        let mut token: Option<String> = None;
+        let mut base_url: Option<String> = None;
+        let mut model_version: Option<String> = None;
+        if let Some(app) = app {
+            use tauri_plugin_store::StoreExt;
+            if let Ok(store) = app.store("settings.json") {
+                let get = |key: &str| -> Option<String> {
+                    store
+                        .get(key)
+                        .and_then(|v| v.as_str().map(|s| s.to_string()))
+                        .filter(|s| !s.trim().is_empty())
+                };
+                token = get("knowledge.mineru.token");
+                base_url = get("knowledge.mineru.base_url");
+                model_version = get("knowledge.mineru.model");
+            }
+        }
+
+        // 环境变量兜底
+        let env = |name: &str| std::env::var(name).ok().filter(|s| !s.trim().is_empty());
+        let token = token.or_else(|| env("YEAPI_MINERU_TOKEN"));
+        let base_url = base_url
+            .or_else(|| env("YEAPI_MINERU_BASE_URL"))
             .map(|s| s.trim_end_matches('/').to_string())
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-        let model_version = std::env::var("YEAPI_MINERU_MODEL")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
+        let model_version = model_version
+            .or_else(|| env("YEAPI_MINERU_MODEL"))
             .unwrap_or_else(|| "pipeline".to_string());
         Self {
             token,
             base_url,
             model_version,
         }
+    }
+}
+
+impl MinerUExtractor {
+    pub fn new(cfg: MinerUConfig) -> Self {
+        Self { cfg }
     }
 }
 
@@ -67,15 +95,15 @@ impl PdfExtractor for MinerUExtractor {
         content: &[u8],
         progress: Option<UnboundedSender<ParseProgress>>,
     ) -> Result<String, String> {
-        let cfg = MinerUConfig::resolve();
+        let cfg = &self.cfg;
         let client = reqwest::Client::builder()
             .timeout(REQ_TIMEOUT)
             .build()
             .map_err(|e| format!("构造 MinerU HTTP 客户端失败: {e}"))?;
 
         match &cfg.token {
-            Some(_) => Self::extract_precise(&client, &cfg, filename, content, &progress).await,
-            None => Self::extract_agent(&client, &cfg, filename, content, &progress).await,
+            Some(_) => Self::extract_precise(&client, cfg, filename, content, &progress).await,
+            None => Self::extract_agent(&client, cfg, filename, content, &progress).await,
         }
     }
 }

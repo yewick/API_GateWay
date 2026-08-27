@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Server, SlidersHorizontal, Palette, RotateCcw, Save, Shield } from "lucide-react";
+import { Server, SlidersHorizontal, Palette, RotateCcw, Save, Shield, BookOpen } from "lucide-react";
 import { PageHeader } from "../components/ui/PageHeader";
 import { Tabs, type TabItem } from "../components/ui/Tabs";
 import { Button } from "../components/ui/Button";
@@ -8,12 +8,14 @@ import { GeneralTab } from "../components/settings/GeneralTab";
 import { UISettingsTab } from "../components/settings/UISettingsTab";
 import { RetryStrategyTab } from "../components/settings/RetryStrategyTab";
 import { SecurityTab } from "../components/settings/SecurityTab";
+import { KnowledgeSettingsTab } from "../components/settings/KnowledgeSettingsTab";
 import { useSettingsStore } from "../stores/settingsStore";
 import { toast } from "../lib/toast";
 
 const tabs: TabItem[] = [
   { key: "service", label: "服务配置", icon: <Server size={15} /> },
   { key: "general", label: "通用设置", icon: <SlidersHorizontal size={15} /> },
+  { key: "knowledge", label: "知识库", icon: <BookOpen size={15} /> },
   { key: "security", label: "安全审计", icon: <Shield size={15} /> },
   { key: "ui", label: "界面设置", icon: <Palette size={15} /> },
   { key: "retry", label: "重试策略", icon: <RotateCcw size={15} /> },
@@ -56,6 +58,7 @@ export const SettingsPage = () => {
         <div className="p-6">
           {activeTab === "service" && <ServiceConfigTab />}
           {activeTab === "general" && <GeneralTab />}
+          {activeTab === "knowledge" && <KnowledgeSettingsTab />}
           {activeTab === "security" && <SecurityTab />}
           {activeTab === "ui" && <UISettingsTab />}
           {activeTab === "retry" && <RetryStrategyTab />}

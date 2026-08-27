@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Upload, FileText, RotateCw, Trash2, Loader2 } from "lucide-react";
+import { Upload, FileText, RotateCw, Trash2, Loader2, Eye } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "../ui/Button";
 import { Badge } from "../ui/Badge";
 import { EmptyState } from "../ui/EmptyState";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Spinner } from "../ui/Spinner";
+import { DocumentViewerModal } from "./DocumentViewerModal";
 import {
   useKbDocuments,
   useUploadDocument,
@@ -31,6 +32,7 @@ export function DocumentList({ kbId }: DocumentListProps) {
   const deleteMutation = useDeleteDocument();
 
   const [deleting, setDeleting] = useState<KbDocument | null>(null);
+  const [viewing, setViewing] = useState<KbDocument | null>(null);
 
   // 存在解析/入库中的文档时，轮询刷新（后台解析回填后自动更新状态）
   const hasPending = docs.some((d) =>
@@ -91,8 +93,8 @@ export function DocumentList({ kbId }: DocumentListProps) {
   };
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex items-center justify-between mb-4 flex-shrink-0">
         <p className="text-xs text-text-muted">
           共 {docs.length} 个文档 · 上传后自动解析，解析完成需手动「入库」向量化
         </p>
@@ -119,7 +121,7 @@ export function DocumentList({ kbId }: DocumentListProps) {
           }
         />
       ) : (
-        <ul className="divide-y divide-border-primary">
+        <ul className="flex-1 min-h-0 overflow-y-auto divide-y divide-border-primary">
           {docs.map((doc) => {
             const st = docStatus(doc.status);
             const pending = ["parsing", "processing"].includes(doc.status);
@@ -150,6 +152,14 @@ export function DocumentList({ kbId }: DocumentListProps) {
                   )}
                 </div>
                 <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setViewing(doc)}
+                    title="查看解析内容与切片"
+                  >
+                    <Eye size={13} />
+                  </Button>
                   {doc.status === "awaiting_review" && (
                     <Button
                       variant="secondary"
@@ -186,6 +196,13 @@ export function DocumentList({ kbId }: DocumentListProps) {
         loading={deleteMutation.isPending}
         onConfirm={handleDelete}
         onCancel={() => setDeleting(null)}
+      />
+
+      <DocumentViewerModal
+        open={!!viewing}
+        onClose={() => setViewing(null)}
+        kbId={kbId}
+        doc={viewing}
       />
     </div>
   );

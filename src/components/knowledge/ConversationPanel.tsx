@@ -41,8 +41,8 @@ export function ConversationPanel({ kbId }: ConversationPanelProps) {
   };
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex items-center justify-between mb-4 flex-shrink-0">
         <p className="text-xs text-text-muted">共 {conversations.length} 条对话记录</p>
         {conversations.length > 0 && (
           <Button variant="danger" size="sm" onClick={() => setConfirmClear(true)}>
@@ -63,7 +63,7 @@ export function ConversationPanel({ kbId }: ConversationPanelProps) {
           description="在「问答」中向知识库提问后，对话记录会保存在这里"
         />
       ) : (
-        <ul className="space-y-3">
+        <ul className="flex-1 min-h-0 overflow-y-auto space-y-3">
           {conversations.map((c) => {
             const isUser = c.role === "user";
             const srcCount = parseSourceCount(c.sources);

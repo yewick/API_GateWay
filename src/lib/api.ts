@@ -4,7 +4,7 @@ import type { Channel, CreateChannelInput, UpdateChannelInput, TestChannelResult
   BuiltinRule, UpdateBuiltinRuleInput, CustomRule, CreateCustomRuleInput,
   SecurityFinding, KbKnowledgeBase, KbDocument, KbSource, KbStats, KbConversation,
   SearchResult, RagAnswer, CreateKbInput, UpdateKbInput, ImportSourceInput,
-  IndexSummary, DocumentContent, UploadDocumentResult, ConversationMessage } from "../types";
+  IndexSummary, DocumentContent, UploadDocumentResult, ConversationMessage, KbChunkView } from "../types";
 
 // 渠道管理 API
 export const channelApi = {
@@ -107,6 +107,8 @@ export const knowledgeApi = {
     invoke<KbDocument>("get_kb_document", { kbId, docId }),
   getDocumentContent: (kbId: string, docId: string) =>
     invoke<DocumentContent>("get_kb_document_content", { kbId, docId }),
+  listDocumentChunks: (kbId: string, docId: string) =>
+    invoke<KbChunkView[]>("list_kb_document_chunks", { kbId, docId }),
   uploadDocument: (kbId: string, path: string) =>
     invoke<UploadDocumentResult>("upload_kb_document", { kbId, path }),
   ingestDocument: (kbId: string, docId: string) =>

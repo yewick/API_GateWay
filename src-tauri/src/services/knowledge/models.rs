@@ -238,6 +238,17 @@ pub struct ChunkMeta {
     pub metadata: String,
 }
 
+/// 切片查看项（前端文档查看器用，不含 `embedding` BLOB）。
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ChunkView {
+    pub chunk_index: i64,
+    pub content: String,
+    pub token_count: i64,
+    pub symbol_name: Option<String>,
+    pub symbol_kind: Option<String>,
+    pub metadata: String,
+}
+
 /// 知识库统计（文档/切片/token 计数）
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct KbStats {

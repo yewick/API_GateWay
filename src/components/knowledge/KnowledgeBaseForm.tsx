@@ -55,7 +55,7 @@ export function KnowledgeBaseForm({ open, onClose, onCreated }: KnowledgeBaseFor
       onCreated?.(kb);
       onClose();
     } catch (err) {
-      toast.error("创建失败", (err as Error)?.message);
+      toast.error("创建失败", typeof err === "string" ? err : (err as Error)?.message);
     }
   };
 
@@ -96,7 +96,7 @@ export function KnowledgeBaseForm({ open, onClose, onCreated }: KnowledgeBaseFor
           label="Embedding 模型"
           value={embeddingModel}
           onChange={(e) => setEmbeddingModel(e.target.value)}
-          placeholder="可选，留空使用默认模型（如 text-embedding-3-small）"
+          placeholder="可选，留空使用默认模型（可在「设置 → 知识库」调整，当前默认 embedding-3）"
           hint="用于向量化的 embedding 模型名"
         />
         <Select
