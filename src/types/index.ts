@@ -49,6 +49,8 @@ export interface RequestLog {
   created_at: string;
   request_body: string | null;
   forward_body: string | null;
+  response_choices: string | null;
+  trace_id: string | null;
   risk_level: string;
   risk_score: number;
   risk_summary: string | null;
@@ -135,6 +137,13 @@ export interface LogStats {
   tokens: number;
 }
 
+export interface LogModeStats {
+  date: string;
+  mode: string;
+  requests: number;
+  tokens: number;
+}
+
 // ---------- 安全规则 ----------
 
 export interface BuiltinRule {
@@ -185,4 +194,157 @@ export interface SecurityFinding {
   detail: string | null;
   action: string;
   created_at: string;
+}
+
+// ---------- 知识库 ----------
+
+export interface KbKnowledgeBase {
+  id: string;
+  name: string;
+  description: string | null;
+  status: number;
+  doc_count: number;
+  chunk_count: number;
+  total_tokens: number;
+  embedding_model: string | null;
+  embedding_channel_id: string | null;
+  mcp_enabled: number;
+  chunk_size: number;
+  chunk_overlap: number;
+  excluded_dirs: string;
+  excluded_files: string;
+  included_files: string;
+  embedding_dim: number;
+  index_status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KbDocument {
+  id: string;
+  kb_id: string;
+  filename: string;
+  file_path: string | null;
+  file_type: string;
+  file_size: number;
+  content_hash: string;
+  content: string;
+  chunk_count: number;
+  token_count: number;
+  status: string;
+  error_message: string | null;
+  source_type: string;
+  source_url: string | null;
+  source_path: string | null;
+  doc_meta: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KbSource {
+  id: string;
+  kb_id: string;
+  source_type: string;
+  source_url: string | null;
+  source_path: string | null;
+  branch: string | null;
+  status: string;
+  file_count: number;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KbStats {
+  doc_count: number;
+  chunk_count: number;
+  total_tokens: number;
+}
+
+export interface KbConversation {
+  id: string;
+  kb_id: string;
+  role: string;
+  content: string;
+  sources: string | null;
+  model: string | null;
+  tokens_used: number;
+  created_at: string;
+}
+
+export interface SearchResult {
+  chunk_id: string;
+  doc_id: string;
+  filename: string;
+  content: string;
+  score: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface RagUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
+export interface RagAnswer {
+  answer: string;
+  sources: SearchResult[];
+  usage: RagUsage | null;
+}
+
+export interface ConversationMessage {
+  role: string;
+  content: string;
+}
+
+export interface CreateKbInput {
+  name: string;
+  description?: string | null;
+  embedding_model?: string | null;
+  embedding_channel_id?: string | null;
+}
+
+export interface UpdateKbInput {
+  name?: string | null;
+  description?: string | null;
+  embedding_model?: string | null;
+  embedding_channel_id?: string | null;
+  status?: number;
+  mcp_enabled?: number;
+  chunk_size?: number;
+  chunk_overlap?: number;
+  excluded_dirs?: string;
+  excluded_files?: string;
+  included_files?: string;
+}
+
+export interface ImportSourceInput {
+  source_type: string;
+  repo_url?: string | null;
+  branch?: string | null;
+  token?: string | null;
+  url?: string | null;
+  dir_path?: string | null;
+}
+
+export interface IndexSummary {
+  kb_id: string;
+  status: string;
+  index_type: string;
+  chunk_count: number;
+  embedding_dim: number;
+  index_path: string | null;
+  skipped: number;
+}
+
+export interface DocumentContent {
+  content: string;
+  file_type: string;
+}
+
+export interface UploadDocumentResult {
+  document: KbDocument;
+  task_id: string;
+  duplicate: boolean;
 }

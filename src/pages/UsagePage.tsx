@@ -1,10 +1,12 @@
 import { useMemo, useState } from "react";
-import { Activity, Zap } from "lucide-react";
-import { useLogStats } from "../hooks/useLogs";
+import { Activity, Zap, RefreshCw } from "lucide-react";
+import { useLogStats, useModeStats } from "../hooks/useLogs";
+import { useThrottledRefresh } from "../hooks/useThrottledRefresh";
+import { ModeDistribution } from "../components/common/ModeDistribution";
 import { PageHeader } from "../components/ui/PageHeader";
 import { Card } from "../components/ui/Card";
 import { Spinner } from "../components/ui/Spinner";
-import { formatNumber } from "../lib/constants";
+import { formatNumber, MODE_LABELS } from "../lib/constants";
 
 const DAY_RANGES = [
   { value: 7, label: "近 7 天" },
@@ -15,6 +17,8 @@ const DAY_RANGES = [
 export const UsagePage = () => {
   const [days, setDays] = useState(7);
   const { data: stats, isLoading } = useLogStats(days);
+  const { data: modeStats, isLoading: modeLoading } = useModeStats(days);
+  const { refresh, refreshing } = useThrottledRefresh([["log-stats"], ["log-mode-stats"]]);
 
   const totals = useMemo(() => {
     if (!stats) return { requests: 0, tokens: 0 };
@@ -27,6 +31,20 @@ export const UsagePage = () => {
     );
   }, [stats]);
 
+  // 各协议汇总
+  const modeTotals = useMemo(() => {
+    const map = new Map<string, { requests: number; tokens: number }>();
+    for (const row of modeStats ?? []) {
+      const cur = map.get(row.mode) ?? { requests: 0, tokens: 0 };
+      cur.requests += row.requests;
+      cur.tokens += row.tokens;
+      map.set(row.mode, cur);
+    }
+    return Array.from(map.entries())
+      .map(([mode, v]) => ({ mode, ...v }))
+      .sort((a, b) => b.requests - a.requests);
+  }, [modeStats]);
+
   const maxRequests = useMemo(
     () => Math.max(1, ...(stats ?? []).map((s) => s.requests)),
     [stats],
@@ -38,7 +56,8 @@ export const UsagePage = () => {
         title="用量分析"
         description="查看请求量与 Token 消耗趋势"
         actions={
-          <div className="flex items-center gap-1 bg-bg-tertiary rounded-lg p-1">
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 bg-bg-tertiary rounded-lg p-1">
             {DAY_RANGES.map((r) => (
               <button
                 key={r.value}
@@ -52,6 +71,17 @@ export const UsagePage = () => {
                 {r.label}
               </button>
             ))}
+            </div>
+            <button
+              onClick={refresh}
+              className={`p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors ${
+                refreshing ? "animate-spin" : ""
+              }`}
+              title="刷新数据"
+              aria-label="刷新数据"
+            >
+              <RefreshCw size={16} />
+            </button>
           </div>
         }
       />
@@ -83,6 +113,43 @@ export const UsagePage = () => {
               </p>
             </div>
           </div>
+        </Card>
+      </div>
+
+      {/* 多协议用量分析 */}
+      <div className="mt-6 mb-6">
+        <Card title="多协议用量" description="按协议（mode）聚合的请求与 Token 消耗">
+          {modeLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Spinner />
+            </div>
+          ) : modeTotals.length > 0 ? (
+            <>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+                {modeTotals.map((m) => (
+                  <div
+                    key={m.mode}
+                    className="p-3 rounded-lg bg-bg-tertiary border border-border-primary"
+                  >
+                    <p className="text-xs text-text-muted mb-1">
+                      {MODE_LABELS[m.mode]?.label ?? m.mode}
+                    </p>
+                    <p className="text-lg font-bold text-text-primary tabular">
+                      {formatNumber(m.requests)}
+                    </p>
+                    <p className="text-[10px] text-text-muted tabular mt-0.5">
+                      {formatNumber(m.tokens)} tokens
+                    </p>
+                  </div>
+                ))}
+              </div>
+              <ModeDistribution data={modeStats ?? []} />
+            </>
+          ) : (
+            <div className="flex items-center justify-center py-12 text-sm text-text-muted">
+              暂无协议统计数据
+            </div>
+          )}
         </Card>
       </div>
 

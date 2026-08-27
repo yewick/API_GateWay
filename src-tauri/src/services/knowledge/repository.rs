@@ -503,6 +503,14 @@ impl KbRepository {
         .await
     }
 
+    pub async fn delete_conversations(&self, kb_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM kb_conversations WHERE kb_id = ?")
+            .bind(kb_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     // -------------------------------------------------------------------------
     // Sources
     // -------------------------------------------------------------------------

@@ -1,7 +1,10 @@
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2, Copy, Send } from "lucide-react";
 import { useApiKeys } from "../../hooks/useApiKeys";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { logKeys } from "../../hooks/useLogs";
+import { dashboardKeys } from "../../hooks/useDashboard";
 import { testApi } from "../../lib/api";
 import { Button } from "../ui/Button";
 import { toast } from "../../lib/toast";
@@ -40,6 +43,7 @@ function buildCurl(item: TestItem, apiKey: ApiKey | undefined): string {
 }
 
 export function TestConsoleTab() {
+  const qc = useQueryClient();
   const { data: apiKeys } = useApiKeys();
   const settings = useSettingsStore((s) => s.settings);
   const defaultHost = `http://${settings.server_host}:${settings.server_port}`;
@@ -102,6 +106,11 @@ export function TestConsoleTab() {
         content: item.content,
       });
       updateItem(item.id, { result: res, sending: false });
+      // 网关已记录本次请求日志，失效日志/统计/仪表盘，让相关页面即时刷新
+      qc.invalidateQueries({ queryKey: logKeys.all });
+      qc.invalidateQueries({ queryKey: ["log-stats"] });
+      qc.invalidateQueries({ queryKey: ["log-mode-stats"] });
+      qc.invalidateQueries({ queryKey: dashboardKeys.stats });
     } catch (e) {
       updateItem(item.id, { sending: false });
       toast.error("发送失败", (e as Error)?.message);

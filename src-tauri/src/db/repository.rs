@@ -40,6 +40,13 @@ impl Repository {
             .await
     }
 
+    pub async fn get_api_key_by_id(&self, id: &str) -> Result<ApiKey, sqlx::Error> {
+        sqlx::query_as::<_, ApiKey>("SELECT * FROM api_keys WHERE id = ? AND status = 1")
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await
+    }
+
     pub async fn create_channel(
         &self,
         input: &CreateChannelInput,
@@ -127,6 +134,22 @@ impl Repository {
         q.build().execute(&self.pool).await?;
 
         self.get_channel(&input.id).await
+    }
+
+    /// 按给定顺序重写渠道优先级（列表首位优先级最高，契合 `ORDER BY priority DESC`）。
+    /// 在一个事务内整序提交，保证原子性。
+    pub async fn reorder_channels(&self, ordered_ids: &[String]) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let len = ordered_ids.len() as i64;
+        for (idx, id) in ordered_ids.iter().enumerate() {
+            let priority = len - idx as i64;
+            sqlx::query("UPDATE channels SET priority = ? WHERE id = ?")
+                .bind(priority)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await
     }
 
     pub async fn search_logs(
@@ -240,6 +263,28 @@ impl Repository {
              WHERE created_at >= ?
              GROUP BY date
              ORDER BY date ASC",
+        )
+        .bind(&cutoff)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// 按天 × 协议（mode）聚合请求量与 token 消耗
+    pub async fn get_mode_stats(&self, days: i64) -> Result<Vec<LogModeStats>, sqlx::Error> {
+        let cutoff = chrono::Utc::now()
+            .checked_sub_signed(chrono::Duration::days(days))
+            .unwrap()
+            .format("%Y-%m-%d")
+            .to_string();
+        sqlx::query_as::<_, LogModeStats>(
+            "SELECT substr(created_at, 1, 10) AS date,
+                    mode,
+                    COUNT(*) AS requests,
+                    COALESCE(SUM(total_tokens), 0) AS tokens
+             FROM request_logs
+             WHERE created_at >= ?
+             GROUP BY date, mode
+             ORDER BY date ASC, mode ASC",
         )
         .bind(&cutoff)
         .fetch_all(&self.pool)

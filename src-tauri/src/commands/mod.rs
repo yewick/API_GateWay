@@ -1,6 +1,7 @@
 pub mod api_key;
 pub mod channel;
 pub mod dashboard;
+pub mod export;
 pub mod knowledge;
 pub mod logs;
 pub mod security;

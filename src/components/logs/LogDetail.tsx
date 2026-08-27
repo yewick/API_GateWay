@@ -13,6 +13,15 @@ interface LogDetailProps {
   onClose: () => void;
 }
 
+// 尝试 JSON 格式化，失败则原样返回
+const prettyJson = (raw: string): string => {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
+};
+
 function DetailRow({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
   return (
     <div className="flex items-start justify-between py-2 border-b border-border-primary/50 last:border-0">
@@ -54,6 +63,7 @@ export function LogDetail({ log, onClose }: LogDetailProps) {
             <DetailRow label="模型" value={log.model} mono />
             <DetailRow label="上游模型" value={log.upstream_model} mono />
             <DetailRow label="模式" value={log.mode} />
+            <DetailRow label="Trace ID" value={log.trace_id} mono />
             <DetailRow
               label="状态码"
               value={
@@ -172,7 +182,27 @@ export function LogDetail({ log, onClose }: LogDetailProps) {
               }}
               wrapLongLines
             >
-              {log.request_body}
+              {prettyJson(log.request_body)}
+            </SyntaxHighlighter>
+          </div>
+        )}
+
+        {/* 响应选择（response_choices，多候选/流式聚合结果） */}
+        {log.response_choices && (
+          <div>
+            <h4 className="text-sm font-semibold text-text-primary mb-2">响应选择</h4>
+            <SyntaxHighlighter
+              language="json"
+              style={isDark ? oneDark : oneLight}
+              customStyle={{
+                margin: 0,
+                borderRadius: "0.5rem",
+                fontSize: "12px",
+                background: "var(--bg-tertiary)",
+              }}
+              wrapLongLines
+            >
+              {prettyJson(log.response_choices)}
             </SyntaxHighlighter>
           </div>
         )}
@@ -194,7 +224,7 @@ export function LogDetail({ log, onClose }: LogDetailProps) {
               }}
               wrapLongLines
             >
-              {log.forward_body}
+              {prettyJson(log.forward_body)}
             </SyntaxHighlighter>
           </div>
         )}

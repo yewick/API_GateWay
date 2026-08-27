@@ -6,12 +6,14 @@ import {
   KeyRound,
   ScrollText,
   Settings,
+  BookOpen,
   Zap,
   PanelLeftClose,
   PanelLeftOpen,
 } from "lucide-react";
 import { NAV_ITEMS, type NavItem } from "../../lib/constants";
 import { ThemeToggle } from "../common/ThemeToggle";
+import { UpdateChecker } from "../common/UpdateChecker";
 import { useSidebarStore } from "../../stores/uiStore";
 
 const iconMap: Record<
@@ -24,6 +26,7 @@ const iconMap: Record<
   KeyRound,
   ScrollText,
   Settings,
+  BookOpen,
 };
 
 export function Sidebar() {
@@ -76,10 +79,13 @@ export function Sidebar() {
         </ul>
       </nav>
 
-      {/* 底部：主题切换 + 版本 */}
+      {/* 底部：主题切换 + 检查更新 + 版本 */}
       <div className="border-t border-border-primary p-2 space-y-1">
         <div className={collapsed ? "flex justify-center" : ""}>
           <ThemeToggle className="w-full justify-start" />
+        </div>
+        <div className={collapsed ? "flex justify-center" : ""}>
+          <UpdateChecker collapsed={collapsed} />
         </div>
         {!collapsed && (
           <p className="px-3 py-1 text-[10px] text-text-muted">YeAPI v0.1.0</p>

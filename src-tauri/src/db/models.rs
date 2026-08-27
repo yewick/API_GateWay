@@ -90,6 +90,15 @@ pub struct LogStats {
     pub tokens: i64,
 }
 
+/// 按天 × 协议（mode）聚合的用量统计（供多协议趋势 / 仪表盘协议分布）
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct LogModeStats {
+    pub date: String,
+    pub mode: String,
+    pub requests: i64,
+    pub tokens: i64,
+}
+
 pub fn now_iso() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
 }

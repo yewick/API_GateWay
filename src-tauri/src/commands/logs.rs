@@ -81,6 +81,17 @@ pub async fn get_log_stats(
 }
 
 #[tauri::command]
+pub async fn get_mode_stats(
+    days: Option<i64>,
+    state: tauri::State<'_, std::sync::Arc<AppState>>,
+) -> Result<Vec<LogModeStats>, String> {
+    let repo = Repository::new(state.db.pool.clone());
+    repo.get_mode_stats(days.unwrap_or(30))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn get_log_findings(
     log_id: String,
     state: tauri::State<'_, std::sync::Arc<AppState>>,

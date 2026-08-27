@@ -98,3 +98,12 @@ pub async fn update_channel(
     let repo = Repository::new(state.db.pool.clone());
     repo.update_channel(&input).await.map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub async fn reorder_channels(
+    ids: Vec<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let repo = Repository::new(state.db.pool.clone());
+    repo.reorder_channels(&ids).await.map_err(|e| e.to_string())
+}

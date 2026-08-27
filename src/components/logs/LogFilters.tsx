@@ -36,6 +36,13 @@ const ACTION_OPTIONS = [
   { value: "block", label: "block" },
 ];
 
+const MODE_OPTIONS = [
+  { value: "chat", label: "chat（OpenAI 对话）" },
+  { value: "messages", label: "messages（Anthropic）" },
+  { value: "responses", label: "responses（Responses API）" },
+  { value: "embedding", label: "embedding（向量化）" },
+];
+
 export function LogFiltersBar({ value, onChange }: LogFiltersProps) {
   const { data: channels } = useChannels();
   const [keyword, setKeyword] = useState(value.keyword ?? "");
@@ -59,6 +66,7 @@ export function LogFiltersBar({ value, onChange }: LogFiltersProps) {
     value.keyword ||
     value.channel_name ||
     value.model ||
+    value.mode ||
     value.status_code ||
     value.risk_level ||
     value.security_action ||
@@ -139,6 +147,20 @@ export function LogFiltersBar({ value, onChange }: LogFiltersProps) {
         className="px-3 py-2 text-sm bg-bg-tertiary border border-border-primary rounded-lg text-text-primary outline-none focus:border-accent cursor-pointer"
       >
         {STATUS_OPTIONS.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+
+      {/* 协议筛选 */}
+      <select
+        value={value.mode ?? ""}
+        onChange={(e) => update({ mode: e.target.value || undefined })}
+        className="px-3 py-2 text-sm bg-bg-tertiary border border-border-primary rounded-lg text-text-primary outline-none focus:border-accent cursor-pointer"
+      >
+        <option value="">全部协议</option>
+        {MODE_OPTIONS.map((opt) => (
           <option key={opt.value} value={opt.value}>
             {opt.label}
           </option>

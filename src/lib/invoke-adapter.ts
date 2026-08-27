@@ -22,6 +22,7 @@ export const REAL_COMMANDS = new Set<string>([
   "update_channel",
   "toggle_channel",
   "delete_channel",
+  "reorder_channels",
   // 密钥
   "get_api_keys",
   "create_api_key",
@@ -32,6 +33,7 @@ export const REAL_COMMANDS = new Set<string>([
   "get_log",
   "delete_log",
   "get_log_stats",
+  "get_mode_stats",
   // 仪表盘
   "get_dashboard_stats",
   // 设置
@@ -51,6 +53,30 @@ export const REAL_COMMANDS = new Set<string>([
   "get_log_findings",
   // 测试台
   "send_test_request",
+  // 导出
+  "write_text_file",
+  // 知识库
+  "get_knowledge_bases",
+  "get_knowledge_base",
+  "create_knowledge_base",
+  "update_knowledge_base",
+  "delete_knowledge_base",
+  "ask_knowledge_base",
+  "get_kb_conversations",
+  "delete_kb_conversations",
+  "list_kb_documents",
+  "get_kb_document",
+  "get_kb_document_content",
+  "upload_kb_document",
+  "ingest_kb_document",
+  "delete_kb_document",
+  "get_kb_stats",
+  "build_kb_index",
+  "get_kb_index",
+  "search_kb",
+  "import_kb_source",
+  "list_kb_sources",
+  "delete_kb_source",
 ]);
 
 // 环境检测：是否运行在 Tauri WebView 中
@@ -153,15 +179,36 @@ const emptyFallback = (cmd: string): Promise<any> => {
     cmd === "get_api_keys" ||
     cmd === "get_logs" ||
     cmd === "get_log_stats" ||
+    cmd === "get_mode_stats" ||
     cmd === "get_builtin_security_rules" ||
     cmd === "get_custom_security_rules" ||
-    cmd === "get_log_findings"
+    cmd === "get_log_findings" ||
+    cmd === "get_knowledge_bases" ||
+    cmd === "get_kb_conversations" ||
+    cmd === "list_kb_documents" ||
+    cmd === "search_kb" ||
+    cmd === "list_kb_sources"
   ) {
     return Promise.resolve([]);
   }
   // 单条类 → null
-  if (cmd === "get_channel" || cmd === "get_log") {
+  if (
+    cmd === "get_channel" ||
+    cmd === "get_log" ||
+    cmd === "get_knowledge_base" ||
+    cmd === "get_kb_document" ||
+    cmd === "get_kb_document_content" ||
+    cmd === "get_kb_index"
+  ) {
     return Promise.resolve(null);
+  }
+  // 知识库统计 → 零值
+  if (cmd === "get_kb_stats") {
+    return Promise.resolve({ doc_count: 0, chunk_count: 0, total_tokens: 0 });
+  }
+  // RAG 问答 → 空结果
+  if (cmd === "ask_knowledge_base") {
+    return Promise.resolve({ answer: "", sources: [], usage: null });
   }
   // 仪表盘统计 → 零值
   if (cmd === "get_dashboard_stats") {

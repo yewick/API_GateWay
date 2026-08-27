@@ -36,6 +36,9 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None::<Vec<&str>>,
         ))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             greet,
             // 渠道
@@ -46,6 +49,7 @@ pub fn run() {
             commands::channel::delete_channel,
             commands::channel::get_channel,
             commands::channel::update_channel,
+            commands::channel::reorder_channels,
             // 密钥
             commands::api_key::get_api_keys,
             commands::api_key::create_api_key,
@@ -56,7 +60,10 @@ pub fn run() {
             commands::logs::get_log,
             commands::logs::delete_log,
             commands::logs::get_log_stats,
+            commands::logs::get_mode_stats,
             commands::logs::get_log_findings,
+            // 导出
+            commands::export::write_text_file,
             // 仪表盘
             commands::dashboard::get_dashboard_stats,
             // 设置
@@ -78,9 +85,26 @@ pub fn run() {
             commands::services::get_service_statuses,
             // 知识库
             commands::knowledge::get_knowledge_bases,
+            commands::knowledge::get_knowledge_base,
             commands::knowledge::create_knowledge_base,
+            commands::knowledge::update_knowledge_base,
+            commands::knowledge::delete_knowledge_base,
             commands::knowledge::ask_knowledge_base,
             commands::knowledge::get_kb_conversations,
+            commands::knowledge::delete_kb_conversations,
+            commands::knowledge::list_kb_documents,
+            commands::knowledge::get_kb_document,
+            commands::knowledge::get_kb_document_content,
+            commands::knowledge::upload_kb_document,
+            commands::knowledge::ingest_kb_document,
+            commands::knowledge::delete_kb_document,
+            commands::knowledge::get_kb_stats,
+            commands::knowledge::build_kb_index,
+            commands::knowledge::get_kb_index,
+            commands::knowledge::search_kb,
+            commands::knowledge::import_kb_source,
+            commands::knowledge::list_kb_sources,
+            commands::knowledge::delete_kb_source,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

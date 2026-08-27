@@ -98,6 +98,7 @@ export const NAV_ITEMS: NavItem[] = [
   { path: "/channels", label: "渠道", icon: "Network" },
   { path: "/api-keys", label: "密钥", icon: "KeyRound" },
   { path: "/logs", label: "日志", icon: "ScrollText" },
+  { path: "/knowledge", label: "知识库", icon: "BookOpen" },
   { path: "/settings", label: "设置", icon: "Settings" },
 ];
 
@@ -114,6 +115,16 @@ export const RISK_LEVELS: Record<string, { label: string; color: string }> = {
   high: { label: "高风险", color: "danger" },
   critical: { label: "严重风险", color: "danger" },
   none: { label: "无风险", color: "neutral" },
+  clean: { label: "干净", color: "success" },
+  info: { label: "提示", color: "info" },
+};
+
+// 协议（mode）徽章文案/配色（与后端 request_logs.mode 对应）
+export const MODE_LABELS: Record<string, { label: string; color: string }> = {
+  chat: { label: "Chat", color: "info" },
+  messages: { label: "Messages", color: "info" },
+  responses: { label: "Responses", color: "info" },
+  embedding: { label: "Embedding", color: "neutral" },
 };
 
 // HTTP 状态码分组

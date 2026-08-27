@@ -4,6 +4,7 @@ interface TooltipProps {
   content: ReactNode;
   children: ReactNode;
   position?: "top" | "bottom";
+  className?: string;
 }
 
 const positionClasses: Record<string, string> = {
@@ -11,9 +12,9 @@ const positionClasses: Record<string, string> = {
   top: "bottom-full left-1/2 -translate-x-1/2 mb-1.5",
 };
 
-export function Tooltip({ content, children, position = "bottom" }: TooltipProps) {
+export function Tooltip({ content, children, position = "bottom", className = "" }: TooltipProps) {
   return (
-    <div className="group relative inline-block max-w-full">
+    <div className={`group relative inline-block max-w-full ${className}`}>
       {children}
       <div
         className={`absolute z-50 ${positionClasses[position]} opacity-0 group-hover:opacity-100 transition-opacity duration-150 pointer-events-none`}

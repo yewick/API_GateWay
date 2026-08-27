@@ -19,6 +19,12 @@ interface TableProps<T> {
   emptyText?: string;
   emptyDescription?: string;
   compact?: boolean;
+  // 原生 HTML5 拖拽排序（可选）
+  rowDraggable?: boolean;
+  onRowDragStart?: (e: React.DragEvent<HTMLTableRowElement>, record: T) => void;
+  onRowDragOver?: (e: React.DragEvent<HTMLTableRowElement>, record: T) => void;
+  onRowDrop?: (e: React.DragEvent<HTMLTableRowElement>, record: T) => void;
+  onRowDragEnd?: (e: React.DragEvent<HTMLTableRowElement>, record: T) => void;
 }
 
 export function Table<T>({
@@ -30,6 +36,11 @@ export function Table<T>({
   emptyText = "暂无数据",
   emptyDescription,
   compact = false,
+  rowDraggable = false,
+  onRowDragStart,
+  onRowDragOver,
+  onRowDrop,
+  onRowDragEnd,
 }: TableProps<T>) {
   if (loading) {
     return (
@@ -75,9 +86,14 @@ export function Table<T>({
               <tr
                 key={key}
                 onClick={onRowClick ? () => onRowClick(record) : undefined}
+                draggable={rowDraggable}
+                onDragStart={onRowDragStart ? (e) => onRowDragStart(e, record) : undefined}
+                onDragOver={onRowDragOver ? (e) => onRowDragOver(e, record) : undefined}
+                onDrop={onRowDrop ? (e) => onRowDrop(e, record) : undefined}
+                onDragEnd={onRowDragEnd ? (e) => onRowDragEnd(e, record) : undefined}
                 className={`border-b border-border-primary/60 transition-colors ${
                   onRowClick ? "cursor-pointer hover:bg-bg-hover/50" : "hover:bg-bg-hover/50"
-                }`}
+                } ${rowDraggable ? "cursor-grab active:cursor-grabbing" : ""}`}
               >
                 {columns.map((col) => (
                   <td

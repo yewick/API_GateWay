@@ -212,6 +212,21 @@ pub struct RagUsage {
     pub total_tokens: u64,
 }
 
+/// 文档解析内容（供前端查看器）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentContent {
+    pub content: String,
+    pub file_type: String,
+}
+
+/// 文档上传结果（Tauri 命令返回；`duplicate` 表示同内容已在库中）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadDocumentResult {
+    pub document: KbDocument,
+    pub task_id: String,
+    pub duplicate: bool,
+}
+
 /// 切片轻量元数据（检索端富化用，不含 `embedding` BLOB，避免把全部向量读进内存）。
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ChunkMeta {

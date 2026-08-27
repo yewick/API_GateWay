@@ -1,12 +1,14 @@
 import { useNavigate } from "react-router-dom";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, RefreshCw } from "lucide-react";
 import { StatsGrid } from "../components/dashboard/StatsGrid";
+import { ModeDistribution } from "../components/common/ModeDistribution";
 import { PageHeader } from "../components/ui/PageHeader";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { LogTable } from "../components/logs/LogTable";
-import { useLogs, type LogFilters } from "../hooks/useLogs";
+import { useLogs, useModeStats, type LogFilters } from "../hooks/useLogs";
 import { useDashboardStats } from "../hooks/useDashboard";
+import { useThrottledRefresh } from "../hooks/useThrottledRefresh";
 import { useState } from "react";
 import type { RequestLog } from "../types";
 import { LogDetail } from "../components/logs/LogDetail";
@@ -15,6 +17,12 @@ export const DashboardPage = () => {
   const navigate = useNavigate();
   const [selectedLog, setSelectedLog] = useState<RequestLog | null>(null);
   const { data: stats } = useDashboardStats();
+  const { data: modeStats } = useModeStats(30);
+  const { refresh, refreshing } = useThrottledRefresh([
+    ["dashboard-stats"],
+    ["log-mode-stats"],
+    ["logs"],
+  ]);
 
   // 最近 5 条日志
   const recentFilters: LogFilters = { page: 1, page_size: 5 };
@@ -25,6 +33,18 @@ export const DashboardPage = () => {
       <PageHeader
         title="仪表盘"
         description="网关运行状态总览"
+        actions={
+          <button
+            onClick={refresh}
+            className={`p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors ${
+              refreshing ? "animate-spin" : ""
+            }`}
+            title="刷新数据"
+            aria-label="刷新数据"
+          >
+            <RefreshCw size={16} />
+          </button>
+        }
       />
 
       {/* 统计卡片 */}
@@ -49,6 +69,13 @@ export const DashboardPage = () => {
             {(stats?.total_requests ?? 0).toLocaleString()}
           </p>
           <p className="text-xs text-text-muted mt-1">网关处理总请求数</p>
+        </Card>
+      </div>
+
+      {/* 请求协议分布 */}
+      <div className="mt-6">
+        <Card title="请求协议分布" description="近 30 天按协议（mode）聚合的请求量">
+          <ModeDistribution data={modeStats ?? []} />
         </Card>
       </div>
 

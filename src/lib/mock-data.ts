@@ -217,6 +217,8 @@ const buildSeedLogs = (): RequestLog[] => {
       created_at: created,
       request_body: `{\n  "model": "${spec.model ?? "gpt-4o"}",\n  "messages": [\n    { "role": "user", "content": "你好，请介绍一下你自己" }\n  ],\n  "stream": ${spec.is_stream ?? false}\n}`,
       forward_body: null,
+      response_choices: null,
+      trace_id: `trace-${i + 1}`,
       risk_level: risk,
       risk_score: spec.risk_score ?? 0,
       risk_summary: risk === "none" ? null : "检测到潜在风险内容",

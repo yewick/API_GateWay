@@ -9,6 +9,7 @@ import { ApiKeysPage } from "./pages/ApiKeysPage";
 import { LogsPage } from "./pages/LogsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { UsagePage } from "./pages/UsagePage";
+import { KnowledgeBasePage } from "./pages/KnowledgeBasePage";
 import { useThemeStore } from "./stores/themeStore";
 import { useSettingsStore } from "./stores/settingsStore";
 
@@ -33,6 +34,7 @@ function App() {
           <Route path="/channels" element={<ChannelsPage />} />
           <Route path="/api-keys" element={<ApiKeysPage />} />
           <Route path="/logs" element={<LogsPage />} />
+          <Route path="/knowledge" element={<KnowledgeBasePage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </Layout>

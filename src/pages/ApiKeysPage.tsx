@@ -13,6 +13,7 @@ import { Table, type Column } from "../components/ui/Table";
 import { Card } from "../components/ui/Card";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { ApiKeyForm } from "../components/api-keys/ApiKeyForm";
+import { QuotaRing } from "../components/api-keys/QuotaRing";
 import { formatTime } from "../lib/constants";
 import { toast } from "../lib/toast";
 
@@ -106,34 +107,29 @@ export const ApiKeysPage = () => {
     {
       key: "quota_used",
       title: "配额使用",
-      width: "200px",
+      width: "220px",
       render: (_v, record) => {
         if (record.quota_limit === -1) {
           return (
-            <div className="flex items-center justify-between gap-3">
-              <div className="h-1.5 flex-1 bg-bg-tertiary rounded-full overflow-hidden" />
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full border-2 border-dashed border-border-primary flex items-center justify-center text-text-muted text-xs flex-shrink-0">
+                ∞
+              </div>
               <span className="text-xs text-text-muted tabular">不限</span>
             </div>
           );
         }
         const pct = Math.min(100, (record.quota_used / record.quota_limit) * 100);
         return (
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-xs text-text-secondary tabular">
+          <div className="flex items-center gap-3">
+            <QuotaRing used={record.quota_used} limit={record.quota_limit} />
+            <div>
+              <div className="text-xs text-text-secondary tabular">
                 {(record.quota_used / 1000).toFixed(1)}k / {(record.quota_limit / 1000).toFixed(1)}k
-              </span>
-              <span className="text-[10px] text-text-muted tabular">
-                {pct.toFixed(0)}%
-              </span>
-            </div>
-            <div className="h-1.5 bg-bg-tertiary rounded-full overflow-hidden">
-              <div
-                className={`h-full rounded-full ${
-                  pct >= 90 ? "bg-danger" : pct >= 70 ? "bg-warning" : "bg-accent"
-                }`}
-                style={{ width: `${pct}%` }}
-              />
+              </div>
+              <div className="text-[10px] text-text-muted tabular">
+                {pct.toFixed(0)}% 已使用
+              </div>
             </div>
           </div>
         );

@@ -1,5 +1,5 @@
 import type { RequestLog } from "../../types";
-import { formatTime, statusColor } from "../../lib/constants";
+import { formatTime, statusColor, MODE_LABELS } from "../../lib/constants";
 import { Table, type Column } from "../ui/Table";
 import { Badge } from "../ui/Badge";
 
@@ -43,6 +43,26 @@ export function LogTable({ data, loading, onRowClick }: LogTableProps) {
       title: "模型",
       render: (v) => (
         <code className="text-xs mono text-text-secondary">{String(v)}</code>
+      ),
+    },
+    {
+      key: "mode",
+      title: "协议",
+      width: "100px",
+      render: (v) => {
+        const mode = String(v ?? "chat");
+        const info = MODE_LABELS[mode] ?? { label: mode, color: "neutral" };
+        return <Badge variant={info.color as never}>{info.label}</Badge>;
+      },
+    },
+    {
+      key: "trace_id",
+      title: "Trace ID",
+      width: "140px",
+      render: (v) => (
+        <code className="text-xs mono text-text-muted truncate block max-w-[130px]" title={String(v ?? "-")}>
+          {v ? String(v) : "-"}
+        </code>
       ),
     },
     {

@@ -1,0 +1,256 @@
+import { useEffect, useRef, useState } from "react";
+import { Send, FileText, User, Bot, Loader2 } from "lucide-react";
+import { Button } from "../ui/Button";
+import { Input } from "../ui/Input";
+import { Select } from "../ui/Select";
+import { EmptyState } from "../ui/EmptyState";
+import { useAskKnowledgeBase } from "../../hooks/useKnowledge";
+import { useApiKeys } from "../../hooks/useApiKeys";
+import type { RagUsage, SearchResult } from "../../types";
+
+interface AskPanelProps {
+  kbId: string;
+}
+
+interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  sources?: SearchResult[];
+  usage?: RagUsage | null;
+}
+
+const TOP_K_OPTIONS = [
+  { value: "3", label: "Top 3" },
+  { value: "5", label: "Top 5" },
+  { value: "10", label: "Top 10" },
+];
+
+export function AskPanel({ kbId }: AskPanelProps) {
+  const askMutation = useAskKnowledgeBase();
+  const { data: apiKeys } = useApiKeys();
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [question, setQuestion] = useState("");
+  const [apiKeyId, setApiKeyId] = useState("");
+  const [model, setModel] = useState("");
+  const [topK, setTopK] = useState("5");
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+
+  const enabledKeys = (apiKeys ?? []).filter((k) => k.status === 1);
+  const selectedKey = enabledKeys.find((k) => k.id === apiKeyId);
+  const modelOptions = selectedKey?.allowed_models ?? [];
+
+  const keyOptions = [
+    { value: "", label: "自动选择" },
+    ...enabledKeys.map((k) => ({ value: k.id, label: k.name })),
+  ];
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [messages, askMutation.isPending]);
+
+  const autoGrow = () => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  };
+
+  const handleKeyChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const id = e.target.value;
+    setApiKeyId(id);
+    const k = enabledKeys.find((x) => x.id === id);
+    setModel(k?.allowed_models?.[0] ?? "");
+  };
+
+  const send = async () => {
+    if (!question.trim()) return;
+    const q = question.trim();
+    setQuestion("");
+    if (taRef.current) taRef.current.style.height = "auto";
+
+    const history = messages
+      .filter((m) => m.content.trim())
+      .map((m) => ({ role: m.role, content: m.content }));
+
+    setMessages((prev) => [...prev, { role: "user", content: q }]);
+
+    try {
+      const res = await askMutation.mutateAsync({
+        kbId,
+        question: q,
+        options: {
+          model: model.trim() || undefined,
+          topK: Number(topK),
+          history,
+          apiKeyId: apiKeyId || undefined,
+        },
+      });
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: res.answer,
+          sources: res.sources,
+          usage: res.usage,
+        },
+      ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: `⚠️ 问答失败：${(err as Error)?.message ?? "未知错误"}`,
+        },
+      ]);
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-full min-h-0">
+      {messages.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center min-h-[200px]">
+          <EmptyState
+            icon={Bot}
+            title="基于知识库问答"
+            description="输入问题，将检索相关文档片段并由模型生成带来源的回答，支持多轮追问"
+          />
+        </div>
+      ) : (
+        <div
+          ref={scrollRef}
+          className="flex-1 min-h-0 space-y-4 overflow-y-auto pr-1"
+        >
+          {messages.map((msg, i) => (
+            <div
+              key={i}
+              className={`flex gap-3 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+            >
+              {msg.role === "assistant" && (
+                <div className="w-8 h-8 rounded-lg bg-accent/15 flex items-center justify-center flex-shrink-0">
+                  <Bot size={16} className="text-accent" />
+                </div>
+              )}
+              <div
+                className={`max-w-[80%] rounded-xl px-4 py-3 ${
+                  msg.role === "user"
+                    ? "bg-accent text-white"
+                    : "bg-bg-tertiary border border-border-primary"
+                }`}
+              >
+                <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                  {msg.content}
+                </p>
+
+                {msg.sources && msg.sources.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-border-primary/60 space-y-2">
+                    <p className="text-[11px] font-medium text-text-muted">
+                      引用来源（{msg.sources.length}）
+                    </p>
+                    {msg.sources.map((s) => (
+                      <div key={s.chunk_id} className="flex items-start gap-2">
+                        <FileText size={12} className="text-text-muted flex-shrink-0 mt-0.5" />
+                        <div className="min-w-0">
+                          <span className="text-[11px] text-text-secondary truncate block">
+                            {s.filename} · {(s.score * 100).toFixed(1)}%
+                          </span>
+                          <p className="text-[11px] text-text-muted leading-relaxed line-clamp-2">
+                            {s.content}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {msg.usage && (
+                  <p className="text-[10px] text-text-muted mt-2 tabular">
+                    {msg.usage.prompt_tokens} prompt + {msg.usage.completion_tokens} completion tokens
+                  </p>
+                )}
+              </div>
+              {msg.role === "user" && (
+                <div className="w-8 h-8 rounded-lg bg-bg-tertiary flex items-center justify-center flex-shrink-0">
+                  <User size={16} className="text-text-muted" />
+                </div>
+              )}
+            </div>
+          ))}
+
+          {askMutation.isPending && (
+            <div className="flex items-center gap-3 justify-start">
+              <div className="w-8 h-8 rounded-lg bg-accent/15 flex items-center justify-center flex-shrink-0">
+                <Bot size={16} className="text-accent" />
+              </div>
+              <div className="flex items-center gap-2 text-sm text-text-muted px-4 py-3">
+                <Loader2 size={14} className="animate-spin" />
+                检索并生成中…
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="pt-4 border-t border-border-primary flex-shrink-0">
+        <div className="flex items-end gap-3 mb-3 flex-wrap">
+          <div className="w-52">
+            <Select
+              label="API Key"
+              options={keyOptions}
+              value={apiKeyId}
+              onChange={handleKeyChange}
+            />
+          </div>
+          <div className="w-44">
+            {modelOptions.length > 0 ? (
+              <Select
+                label="对话模型"
+                options={modelOptions.map((m) => ({ value: m, label: m }))}
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+              />
+            ) : (
+              <Input
+                label="对话模型"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder="默认 gpt-4o"
+              />
+            )}
+          </div>
+          <div className="w-28">
+            <Select
+              label="检索条数"
+              options={TOP_K_OPTIONS}
+              value={topK}
+              onChange={(e) => setTopK(e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="flex items-end gap-2">
+          <textarea
+            ref={taRef}
+            rows={1}
+            value={question}
+            onChange={(e) => {
+              setQuestion(e.target.value);
+              autoGrow();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+            placeholder="向知识库提问…（Enter 发送 / Shift+Enter 换行）"
+            className="flex-1 px-3 py-2 text-sm bg-bg-tertiary border border-border-primary rounded-lg text-text-primary placeholder-text-muted outline-none transition-colors focus:border-accent focus:ring-1 focus:ring-accent/40 resize-none max-h-[200px] overflow-y-auto"
+          />
+          <Button onClick={send} disabled={!question.trim()} loading={askMutation.isPending}>
+            <Send size={15} />
+            发送
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}

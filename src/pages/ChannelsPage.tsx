@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { Plus, Pencil, Trash2, Power, PowerOff } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Plus, Pencil, Trash2, Power, PowerOff, GripVertical } from "lucide-react";
 import type { Channel } from "../types";
-import { useChannels, useDeleteChannel, useToggleChannel } from "../hooks/useChannels";
+import { useChannels, useDeleteChannel, useToggleChannel, useReorderChannels } from "../hooks/useChannels";
+import { useDashboardStats } from "../hooks/useDashboard";
 import { PageHeader } from "../components/ui/PageHeader";
 import { Button } from "../components/ui/Button";
 import { Badge } from "../components/ui/Badge";
@@ -10,18 +11,76 @@ import { Card } from "../components/ui/Card";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { ChannelForm } from "../components/channels/ChannelForm";
 import { ChannelTestButton } from "../components/channels/ChannelTestButton";
-import { getChannelType, formatTime } from "../lib/constants";
+import { getChannelType, formatTime, formatNumber } from "../lib/constants";
 import { Tooltip } from "../components/ui/Tooltip";
 import { toast } from "../lib/toast";
 
 export const ChannelsPage = () => {
   const { data: channels, isLoading } = useChannels();
+  const { data: stats } = useDashboardStats();
   const deleteMutation = useDeleteChannel();
   const toggleMutation = useToggleChannel();
+  const reorderMutation = useReorderChannels();
 
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Channel | null>(null);
   const [deleting, setDeleting] = useState<Channel | null>(null);
+
+  // 拖拽排序：本地维护展示顺序，落库后由后端回读刷新
+  const [order, setOrder] = useState<string[]>([]);
+  const dragId = useRef<string | null>(null);
+
+  useEffect(() => {
+    setOrder((channels ?? []).map((c) => c.id));
+  }, [channels]);
+
+  const orderedChannels = useMemo(() => {
+    const list = channels ?? [];
+    if (order.length === 0) return list;
+    const byId = new Map(list.map((c) => [c.id, c] as const));
+    return order
+      .map((id) => byId.get(id))
+      .filter((c): c is Channel => !!c);
+  }, [channels, order]);
+
+  const handleDragStart = (e: React.DragEvent<HTMLTableRowElement>, record: Channel) => {
+    dragId.current = record.id;
+    e.dataTransfer.effectAllowed = "move";
+    // Firefox 需要设置 data 才能触发拖拽
+    e.dataTransfer.setData("text/plain", record.id);
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLTableRowElement>, record: Channel) => {
+    e.preventDefault();
+    const from = dragId.current;
+    if (!from || from === record.id) return;
+    setOrder((prev) => {
+      const fromIdx = prev.indexOf(from);
+      const toIdx = prev.indexOf(record.id);
+      if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return prev;
+      const next = [...prev];
+      next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, from);
+      return next;
+    });
+  };
+
+  const handleDrop = async (e: React.DragEvent<HTMLTableRowElement>) => {
+    e.preventDefault();
+    if (order.length === 0) return;
+    const finalOrder = order;
+    try {
+      await reorderMutation.mutateAsync(finalOrder);
+      toast.success("排序已保存", "渠道优先级已更新");
+    } catch (err) {
+      toast.error("排序保存失败", (err as Error)?.message);
+      setOrder((channels ?? []).map((c) => c.id));
+    }
+  };
+
+  const handleDragEnd = () => {
+    dragId.current = null;
+  };
 
   const openCreate = () => {
     setEditing(null);
@@ -58,6 +117,16 @@ export const ChannelsPage = () => {
   };
 
   const columns: Column<Channel>[] = [
+    {
+      key: "drag",
+      title: "",
+      width: "36px",
+      render: () => (
+        <span className="text-text-muted flex items-center justify-center">
+          <GripVertical size={14} />
+        </span>
+      ),
+    },
     {
       key: "name",
       title: "渠道名称",
@@ -193,6 +262,10 @@ export const ChannelsPage = () => {
     },
   ];
 
+  const total = stats?.total_channels ?? (channels ?? []).length;
+  const active = stats?.active_channels ?? (channels ?? []).filter((c) => c.status === 1).length;
+  const disabled = Math.max(0, total - active);
+
   return (
     <div>
       <PageHeader
@@ -206,17 +279,33 @@ export const ChannelsPage = () => {
         }
       />
 
+      {/* 统计卡片 */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+        <StatCard label="总渠道" value={formatNumber(total)} />
+        <StatCard label="活跃渠道" value={formatNumber(active)} />
+        <StatCard label="已禁用" value={formatNumber(disabled)} />
+        <StatCard label="平均延迟" value={`${formatNumber(stats?.avg_latency_ms ?? 0)} ms`} />
+      </div>
+
       {/* 渠道列表 */}
       <Card noPadding>
         <Table
           columns={columns}
-          data={channels ?? []}
+          data={orderedChannels}
           rowKey={(r) => r.id}
           loading={isLoading}
           emptyText="暂无渠道"
           emptyDescription="点击右上角「添加渠道」创建第一个渠道"
+          rowDraggable
+          onRowDragStart={handleDragStart}
+          onRowDragOver={handleDragOver}
+          onRowDrop={handleDrop}
+          onRowDragEnd={handleDragEnd}
         />
       </Card>
+      <p className="text-[11px] text-text-muted mt-2">
+        拖动行前的把手可调整渠道优先级（越靠上优先级越高）
+      </p>
 
       {/* 添加/编辑弹窗 */}
       <ChannelForm
@@ -242,3 +331,12 @@ export const ChannelsPage = () => {
     </div>
   );
 };
+
+function StatCard({ label, value }: { label: string; value: string }) {
+  return (
+    <Card className="py-4">
+      <p className="text-xs text-text-secondary mb-1">{label}</p>
+      <p className="text-xl font-bold text-text-primary tabular">{value}</p>
+    </Card>
+  );
+}
