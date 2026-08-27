@@ -81,9 +81,11 @@ export interface Settings {
   retry_enabled: boolean;
   retry_times: number;
   default_embedding_model: string;
+  pdf_backend: string;
   mineru_token: string;
   mineru_base_url: string;
   mineru_model: string;
+  mineru_mode: string;
   security_enabled: boolean;
   security_mode: string;
   security_scan_request: boolean;

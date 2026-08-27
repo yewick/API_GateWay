@@ -232,11 +232,15 @@ export function AskPanel({ kbId }: AskPanelProps) {
             ref={taRef}
             rows={1}
             value={question}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
             onChange={(e) => {
               setQuestion(e.target.value);
               autoGrow();
             }}
             onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 send();

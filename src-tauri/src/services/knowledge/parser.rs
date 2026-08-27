@@ -98,20 +98,20 @@ pub fn extension(filename: &str) -> String {
 /// - docx / pptx / xlsx / csv / html → 各解析模块，产出 Markdown / 纯文本
 /// - 其他 → 尝试按 UTF-8 文本读取
 ///
-/// `mineru_cfg` 为调用方（持有 AppHandle）经 [`super::mineru::MinerUConfig::resolve`]
-/// 解析好的 MinerU 配置；`None` 时 MinerU 后端回退环境变量/默认值。
+/// `app` 用于读取 store（`knowledge.pdf_backend` / `knowledge.mineru.*`）；`None` 时回退环境变量/默认值。
 pub async fn parse_document(
     filename: &str,
     content: &[u8],
     progress: Option<UnboundedSender<pdf::ParseProgress>>,
-    mineru_cfg: Option<super::mineru::MinerUConfig>,
+    app: Option<&tauri::AppHandle>,
 ) -> Result<ParsedDocument, String> {
     let ext = extension(filename);
 
     if ext == "pdf" {
+        let mineru_cfg = super::mineru::MinerUConfig::resolve(app);
+        let backend = pdf::resolve_backend(app);
         let text =
-            pdf::extract_pdf_text(pdf::resolve_backend(), filename, content, progress, mineru_cfg)
-                .await?;
+            pdf::extract_pdf_text(backend, filename, content, progress, Some(mineru_cfg)).await?;
         if text.trim().is_empty() {
             return Err("无法从该 PDF 提取文本（可能是扫描件/纯图片，OCR 尚未支持）".to_string());
         }

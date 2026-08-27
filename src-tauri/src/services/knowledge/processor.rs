@@ -11,10 +11,10 @@ use crate::db::repository::Repository;
 
 use super::embedder;
 use super::index::{HnswIndex, IndexStore};
-use super::mineru;
 use super::models::*;
 use super::parser;
 use super::pdf;
+use super::rag;
 use super::repository::KbRepository;
 use super::splitter::{self, SplitConfig};
 
@@ -48,8 +48,7 @@ pub async fn process_document(
     let repo = KbRepository::new(pool.clone());
 
     // 1. 解析（MinerU 配置从 settings store 读取，见 todo §8.2）
-    let mineru_cfg = mineru::MinerUConfig::resolve(Some(app));
-    let parsed = parser::parse_document(filename, content, None, Some(mineru_cfg)).await?;
+    let parsed = parser::parse_document(filename, content, None, Some(app)).await?;
 
     // 2. 先落一条文档记录（status=processing，content 已就绪，chunk 待入库）
     let now = crate::utils::time::now_iso();
@@ -128,8 +127,7 @@ pub async fn parse_document_background(
     }
 
     // MinerU 配置从 settings store 读取（持有 AppHandle，见 todo §8.2）
-    let mineru_cfg = mineru::MinerUConfig::resolve(Some(app));
-    match parser::parse_document(filename, content, Some(tx), Some(mineru_cfg)).await {
+    match parser::parse_document(filename, content, Some(tx), Some(app)).await {
         Ok(parsed) => {
             let _ = repo
                 .update_document_content(doc_id, &parsed.text, &parsed.file_type, "awaiting_review")
@@ -260,21 +258,10 @@ async fn ingest_into_kb(
         .await
         .map_err(|e| e.to_string())?;
 
-    // 4. 向量化（未配置模型 → 视为失败，文档不可向量检索）
+    // 4. 向量化（未配置模型 → 回退全局默认模型，与 ask/search 保持一致）
     let model = match kb.embedding_model.clone() {
         Some(m) if !m.trim().is_empty() => m,
-        _ => {
-            return finish_failed(
-                &repo,
-                doc_id,
-                kb_id,
-                total_tokens,
-                chunks.len(),
-                "知识库未配置 embedding_model，无法向量化".to_string(),
-                app,
-            )
-            .await;
-        }
+        _ => super::rag::default_embedding_model(app),
     };
 
     let vecs = match embed_chunks_batched(&chunks, &model, kb.embedding_channel_id.as_deref(), &db).await {

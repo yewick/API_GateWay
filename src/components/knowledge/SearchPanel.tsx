@@ -53,6 +53,7 @@ export function SearchPanel({ kbId }: SearchPanelProps) {
             onChange={(e) => setQuery(e.target.value)}
             placeholder="输入问题或关键词，向量 + 关键词混合召回"
             onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
               if (e.key === "Enter") runSearch();
             }}
           />

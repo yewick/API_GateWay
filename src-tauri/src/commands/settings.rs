@@ -16,10 +16,14 @@ pub struct SettingsResponse {
     pub retry_enabled: bool,
     pub retry_times: i32,
     pub default_embedding_model: String,
+    /// PDF 解析后端（native / pymupdf / mineru）
+    pub pdf_backend: String,
     /// MinerU token（空串 → Agent 轻量 API；非空 → Precise API）
     pub mineru_token: String,
     pub mineru_base_url: String,
     pub mineru_model: String,
+    /// MinerU 模式（agent / precise）
+    pub mineru_mode: String,
     pub security_enabled: bool,
     pub security_mode: String,
     pub security_scan_request: bool,
@@ -87,6 +91,7 @@ pub async fn get_settings(
         retry_enabled: get_bool("retry.enabled", true),
         retry_times: get_i32("retry.times", 3),
         default_embedding_model: get_str("knowledge.default_embedding_model", DEFAULT_EMBEDDING_MODEL),
+        pdf_backend: get_str_env("knowledge.pdf_backend", "YEAPI_PDF_BACKEND", "native"),
         mineru_token: get_str_env("knowledge.mineru.token", "YEAPI_MINERU_TOKEN", ""),
         mineru_base_url: get_str_env(
             "knowledge.mineru.base_url",
@@ -94,6 +99,7 @@ pub async fn get_settings(
             "https://mineru.net",
         ),
         mineru_model: get_str_env("knowledge.mineru.model", "YEAPI_MINERU_MODEL", "pipeline"),
+        mineru_mode: get_str_env("knowledge.mineru.mode", "YEAPI_MINERU_MODE", "agent"),
         security_enabled: get_bool("security.enabled", true),
         security_mode: get_str("security.mode", "audit"),
         security_scan_request: get_bool("security.scan_request", true),
@@ -118,9 +124,11 @@ pub struct SaveSettingsInput {
     pub retry_enabled: Option<bool>,
     pub retry_times: Option<i32>,
     pub default_embedding_model: Option<String>,
+    pub pdf_backend: Option<String>,
     pub mineru_token: Option<String>,
     pub mineru_base_url: Option<String>,
     pub mineru_model: Option<String>,
+    pub mineru_mode: Option<String>,
     pub security_enabled: Option<bool>,
     pub security_mode: Option<String>,
     pub security_scan_request: Option<bool>,
@@ -179,6 +187,9 @@ pub async fn save_settings(
     if let Some(ref v) = settings.default_embedding_model {
         store.set("knowledge.default_embedding_model", serde_json::Value::String(v.clone()));
     }
+    if let Some(ref v) = settings.pdf_backend {
+        store.set("knowledge.pdf_backend", serde_json::Value::String(v.clone()));
+    }
     if let Some(ref v) = settings.mineru_token {
         store.set("knowledge.mineru.token", serde_json::Value::String(v.clone()));
     }
@@ -187,6 +198,9 @@ pub async fn save_settings(
     }
     if let Some(ref v) = settings.mineru_model {
         store.set("knowledge.mineru.model", serde_json::Value::String(v.clone()));
+    }
+    if let Some(ref v) = settings.mineru_mode {
+        store.set("knowledge.mineru.mode", serde_json::Value::String(v.clone()));
     }
     if let Some(v) = settings.security_enabled {
         store.set("security.enabled", serde_json::Value::Bool(v));

@@ -10,6 +10,7 @@
 //! https://mineru.net）、`YEAPI_MINERU_MODEL`（Precise 用，默认 pipeline）次之，便于无前端时临时配置。
 
 use std::error::Error;
+use std::str::FromStr;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -31,13 +32,41 @@ pub struct MinerUExtractor {
     cfg: MinerUConfig,
 }
 
+/// MinerU 调用模式（显式选择，不再靠 token 有无隐式推断）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MinerUMode {
+    /// Agent 轻量 API（无 token，按 IP 限流，≤10MB/≤20 页）
+    Agent,
+    /// Precise API（需 token，≤200MB/≤200 页）
+    Precise,
+}
+
+impl Default for MinerUMode {
+    fn default() -> Self {
+        Self::Agent
+    }
+}
+
+impl FromStr for MinerUMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "agent" | "lightweight" => Ok(Self::Agent),
+            "precise" => Ok(Self::Precise),
+            other => Err(format!("未知的 MinerU 模式: {other}（可选 agent / precise）")),
+        }
+    }
+}
+
 /// MinerU 配置：store 优先 → 环境变量 → 默认值。
 #[derive(Debug, Clone)]
 pub struct MinerUConfig {
-    /// 有值 → Precise API；无 → Agent 轻量 API
     pub token: Option<String>,
     pub base_url: String,
     pub model_version: String,
+    /// Agent / Precise 模式（显式选择，默认 Agent）
+    pub mode: MinerUMode,
 }
 
 impl MinerUConfig {
@@ -48,6 +77,7 @@ impl MinerUConfig {
         let mut token: Option<String> = None;
         let mut base_url: Option<String> = None;
         let mut model_version: Option<String> = None;
+        let mut mode: Option<String> = None;
         if let Some(app) = app {
             use tauri_plugin_store::StoreExt;
             if let Ok(store) = app.store("settings.json") {
@@ -60,6 +90,7 @@ impl MinerUConfig {
                 token = get("knowledge.mineru.token");
                 base_url = get("knowledge.mineru.base_url");
                 model_version = get("knowledge.mineru.model");
+                mode = get("knowledge.mineru.mode");
             }
         }
 
@@ -73,10 +104,22 @@ impl MinerUConfig {
         let model_version = model_version
             .or_else(|| env("YEAPI_MINERU_MODEL"))
             .unwrap_or_else(|| "pipeline".to_string());
+        let mode = mode
+            .or_else(|| env("YEAPI_MINERU_MODE"))
+            .map(|s| MinerUMode::from_str(&s).unwrap_or_default())
+            .unwrap_or_else(|| {
+                // 未显式指定模式：有 token 推断 Precise（向后兼容），否则 Agent
+                if token.is_some() {
+                    MinerUMode::Precise
+                } else {
+                    MinerUMode::Agent
+                }
+            });
         Self {
             token,
             base_url,
             model_version,
+            mode,
         }
     }
 }
@@ -101,9 +144,14 @@ impl PdfExtractor for MinerUExtractor {
             .build()
             .map_err(|e| format!("构造 MinerU HTTP 客户端失败: {e}"))?;
 
-        match &cfg.token {
-            Some(_) => Self::extract_precise(&client, cfg, filename, content, &progress).await,
-            None => Self::extract_agent(&client, cfg, filename, content, &progress).await,
+        match cfg.mode {
+            MinerUMode::Precise => {
+                if cfg.token.as_deref().map_or(true, |t| t.trim().is_empty()) {
+                    return Err("MinerU Precise 模式需要配置 token".to_string());
+                }
+                Self::extract_precise(&client, cfg, filename, content, &progress).await
+            }
+            MinerUMode::Agent => Self::extract_agent(&client, cfg, filename, content, &progress).await,
         }
     }
 }

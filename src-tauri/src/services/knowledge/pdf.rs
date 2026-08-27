@@ -91,8 +91,24 @@ impl PdfExtractor for NativeExtractor {
     }
 }
 
-/// 解析后端选择：默认 `native`，可用环境变量 `YEAPI_PDF_BACKEND` 覆盖（native/pymupdf/mineru）。
-pub fn resolve_backend() -> PdfBackend {
+/// 解析后端选择：store 键 `knowledge.pdf_backend` 优先（前端可调），环境变量 `YEAPI_PDF_BACKEND`
+/// 次之（无前端时临时配置），最后默认 `native`。
+pub fn resolve_backend(app: Option<&tauri::AppHandle>) -> PdfBackend {
+    // store 读取（无 AppHandle 或 store 不可用时静默跳过）
+    if let Some(app) = app {
+        use tauri_plugin_store::StoreExt;
+        if let Ok(store) = app.store("settings.json") {
+            if let Some(v) = store
+                .get("knowledge.pdf_backend")
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
+            {
+                if !v.trim().is_empty() {
+                    return PdfBackend::from_str(&v).unwrap_or_default();
+                }
+            }
+        }
+    }
+    // 环境变量兜底
     std::env::var("YEAPI_PDF_BACKEND")
         .ok()
         .filter(|s| !s.trim().is_empty())
