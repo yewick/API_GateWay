@@ -170,6 +170,14 @@ export const KnowledgeBasePage = () => {
                           <span className="text-sm font-medium text-text-primary truncate">
                             {kb.name}
                           </span>
+                          {kb.mcp_enabled === 1 && (
+                            <Badge
+                              variant="success"
+                              className="!px-1.5 !py-0 text-[10px] flex-shrink-0"
+                            >
+                              MCP
+                            </Badge>
+                          )}
                         </div>
                         <div className="flex items-center gap-1.5 mt-1.5">
                           <span className="text-[11px] text-text-muted tabular">

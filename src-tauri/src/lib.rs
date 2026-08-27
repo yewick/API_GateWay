@@ -81,6 +81,8 @@ pub fn run() {
             commands::security::delete_custom_security_rule,
             // 测试台
             commands::test::send_test_request,
+            // MCP 测试台
+            commands::mcp::send_mcp_request,
             // 服务状态
             commands::services::get_service_statuses,
             // 知识库

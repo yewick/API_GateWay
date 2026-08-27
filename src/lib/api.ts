@@ -4,7 +4,8 @@ import type { Channel, CreateChannelInput, UpdateChannelInput, TestChannelResult
   BuiltinRule, UpdateBuiltinRuleInput, CustomRule, CreateCustomRuleInput,
   SecurityFinding, KbKnowledgeBase, KbDocument, KbSource, KbStats, KbConversation,
   SearchResult, RagAnswer, CreateKbInput, UpdateKbInput, ImportSourceInput,
-  IndexSummary, DocumentContent, UploadDocumentResult, ConversationMessage, KbChunkView } from "../types";
+  IndexSummary, DocumentContent, UploadDocumentResult, ConversationMessage, KbChunkView,
+  ServiceStatus } from "../types";
 
 // 渠道管理 API
 export const channelApi = {
@@ -150,4 +151,13 @@ export const knowledgeApi = {
   listSources: (kbId: string) => invoke<KbSource[]>("list_kb_sources", { kbId }),
   deleteSource: (kbId: string, sourceId: string) =>
     invoke<void>("delete_kb_source", { kbId, sourceId }),
+};
+
+// MCP API
+export const mcpApi = {
+  // 所有服务状态（含 MCP），对应 get_service_statuses
+  getStatuses: () => invoke<ServiceStatus[]>("get_service_statuses"),
+  // MCP 测试台：直连 /mcp 发送 JSON-RPC（initialize / tools/list / tools/call）
+  sendRequest: (input: { host: string; method: string; params?: unknown }) =>
+    invoke<{ status: number; body: unknown }>("send_mcp_request", { input }),
 };

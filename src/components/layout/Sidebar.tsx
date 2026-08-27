@@ -7,6 +7,7 @@ import {
   ScrollText,
   Settings,
   BookOpen,
+  Plug,
   Zap,
   PanelLeftClose,
   PanelLeftOpen,
@@ -27,6 +28,7 @@ const iconMap: Record<
   ScrollText,
   Settings,
   BookOpen,
+  Plug,
 };
 
 export function Sidebar() {

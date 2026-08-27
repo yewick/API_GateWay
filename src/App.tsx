@@ -10,6 +10,7 @@ import { LogsPage } from "./pages/LogsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { UsagePage } from "./pages/UsagePage";
 import { KnowledgeBasePage } from "./pages/KnowledgeBasePage";
+import { McpPage } from "./pages/McpPage";
 import { useThemeStore } from "./stores/themeStore";
 import { useSettingsStore } from "./stores/settingsStore";
 
@@ -35,6 +36,7 @@ function App() {
           <Route path="/api-keys" element={<ApiKeysPage />} />
           <Route path="/logs" element={<LogsPage />} />
           <Route path="/knowledge" element={<KnowledgeBasePage />} />
+          <Route path="/mcp" element={<McpPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </Layout>

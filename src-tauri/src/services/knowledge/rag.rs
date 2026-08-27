@@ -71,6 +71,15 @@ pub async fn ask(
         None => select_api_key(&db, chat_model).await?,
     };
 
+    // 0.1 配额预检：与 HTTP /api/kb/ask 一致，超出上限直接拒绝。
+    // 否则只走 proxy 事后扣减（increment_quota），用量会累计但永不触发「用量限定」。
+    if api_key.quota_limit > 0 && api_key.quota_used >= api_key.quota_limit {
+        return Err(format!(
+            "密钥「{}」用量已达配额上限（{}/{} tokens），请提高配额或更换密钥",
+            api_key.name, api_key.quota_used, api_key.quota_limit
+        ));
+    }
+
     // 1. 确定 embedding 模型与指定渠道
     let (embedding_model, embedding_channel_id) = if kb_id.is_empty() {
         (default_embedding_model(app), None)

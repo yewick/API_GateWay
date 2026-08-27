@@ -53,6 +53,10 @@ export const REAL_COMMANDS = new Set<string>([
   "get_log_findings",
   // 测试台
   "send_test_request",
+  // MCP 测试台
+  "send_mcp_request",
+  // 服务状态
+  "get_service_statuses",
   // 导出
   "write_text_file",
   // 知识库
@@ -240,6 +244,13 @@ const emptyFallback = (cmd: string): Promise<any> => {
   if (cmd === "send_test_request") {
     return Promise.resolve({ status: 0, body: null });
   }
+  if (cmd === "send_mcp_request") {
+    return Promise.resolve({ status: 0, body: null });
+  }
+  // 服务状态 → 空数组
+  if (cmd === "get_service_statuses") {
+    return Promise.resolve([]);
+  }
   // 写入/删除等 → void
   return Promise.resolve(undefined);
 };
@@ -252,6 +263,22 @@ export const removeRealCommand = (cmd: string) => {
   REAL_COMMANDS.delete(cmd);
 };
 
+// Tauri 命令 `Result<T, String>` 失败时，invoke 以「字符串」reject（而非 Error 对象），
+// 统一在此归一化为 Error，使调用方 `(err as Error).message` 能读到后端真实错误信息。
+const normalizeError = (e: unknown): Error => {
+  if (e instanceof Error) return e;
+  if (typeof e === "string") return new Error(e);
+  if (e && typeof e === "object") {
+    const m = (e as { message?: unknown }).message;
+    if (typeof m === "string" && m) return new Error(m);
+  }
+  try {
+    return new Error(JSON.stringify(e));
+  } catch {
+    return new Error(String(e));
+  }
+};
+
 export const invoke = <T>(cmd: string, args?: unknown): Promise<T> => {
   // 浏览器模式：回退到空数据
   if (!isTauri()) {
@@ -260,9 +287,11 @@ export const invoke = <T>(cmd: string, args?: unknown): Promise<T> => {
 
   // Tauri 模式：真实命令走后端，其余回退到空数据
   if (REAL_COMMANDS.has(cmd)) {
-    return tauriInvoke<T>(cmd, serializeRequest(cmd, args)).then((data) =>
-      transformResponse<T>(cmd, data),
-    );
+    return tauriInvoke<T>(cmd, serializeRequest(cmd, args))
+      .then((data) => transformResponse<T>(cmd, data))
+      .catch((e) => {
+        throw normalizeError(e);
+      });
   }
 
   return emptyFallback(cmd);

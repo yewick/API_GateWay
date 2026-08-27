@@ -364,3 +364,28 @@ export interface UploadDocumentResult {
   task_id: string;
   duplicate: boolean;
 }
+
+/** MCP 工具定义（对应后端 mcp_tools() 的每项：name/description/inputSchema） */
+export interface McpTool {
+  name: string;
+  description: string;
+  inputSchema: {
+    type: string;
+    properties?: Record<string, unknown>;
+    required?: string[];
+  };
+}
+
+/** 服务状态（对应后端 ServiceStatus，`stats` 随服务不同而各异） */
+export interface ServiceStatus {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  running: boolean;
+  stats: {
+    available_knowledge_bases?: number;
+    tools?: McpTool[];
+    [k: string]: unknown;
+  };
+}

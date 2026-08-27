@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Send, FileText, User, Bot, Loader2 } from "lucide-react";
+import { Send, FileText, User, Bot, Loader2, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { Select } from "../ui/Select";
 import { EmptyState } from "../ui/EmptyState";
+import { MarkdownContent } from "../ui/Markdown";
 import { useAskKnowledgeBase } from "../../hooks/useKnowledge";
 import { useApiKeys } from "../../hooks/useApiKeys";
 import type { RagUsage, SearchResult } from "../../types";
@@ -33,6 +34,7 @@ export function AskPanel({ kbId }: AskPanelProps) {
   const [apiKeyId, setApiKeyId] = useState("");
   const [model, setModel] = useState("");
   const [topK, setTopK] = useState("5");
+  const [expandedSources, setExpandedSources] = useState<Set<number>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -61,6 +63,15 @@ export function AskPanel({ kbId }: AskPanelProps) {
     setApiKeyId(id);
     const k = enabledKeys.find((x) => x.id === id);
     setModel(k?.allowed_models?.[0] ?? "");
+  };
+
+  const toggleSources = (i: number) => {
+    setExpandedSources((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
   };
 
   const send = async () => {
@@ -138,28 +149,45 @@ export function AskPanel({ kbId }: AskPanelProps) {
                     : "bg-bg-tertiary border border-border-primary"
                 }`}
               >
-                <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                  {msg.content}
-                </p>
+                {msg.role === "assistant" ? (
+                  <MarkdownContent>{msg.content}</MarkdownContent>
+                ) : (
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                    {msg.content}
+                  </p>
+                )}
 
                 {msg.sources && msg.sources.length > 0 && (
-                  <div className="mt-3 pt-3 border-t border-border-primary/60 space-y-2">
-                    <p className="text-[11px] font-medium text-text-muted">
+                  <div className="mt-3 pt-3 border-t border-border-primary/60">
+                    <button
+                      type="button"
+                      onClick={() => toggleSources(i)}
+                      className="flex items-center gap-1.5 w-full text-left text-[11px] font-medium text-text-muted hover:text-text-primary transition-colors"
+                    >
+                      {expandedSources.has(i) ? (
+                        <ChevronDown size={12} className="flex-shrink-0" />
+                      ) : (
+                        <ChevronRight size={12} className="flex-shrink-0" />
+                      )}
                       引用来源（{msg.sources.length}）
-                    </p>
-                    {msg.sources.map((s) => (
-                      <div key={s.chunk_id} className="flex items-start gap-2">
-                        <FileText size={12} className="text-text-muted flex-shrink-0 mt-0.5" />
-                        <div className="min-w-0">
-                          <span className="text-[11px] text-text-secondary truncate block">
-                            {s.filename} · {(s.score * 100).toFixed(1)}%
-                          </span>
-                          <p className="text-[11px] text-text-muted leading-relaxed line-clamp-2">
-                            {s.content}
-                          </p>
-                        </div>
+                    </button>
+                    {expandedSources.has(i) && (
+                      <div className="mt-2 space-y-2">
+                        {msg.sources.map((s) => (
+                          <div key={s.chunk_id} className="flex items-start gap-2">
+                            <FileText size={12} className="text-text-muted flex-shrink-0 mt-0.5" />
+                            <div className="min-w-0">
+                              <span className="text-[11px] text-text-secondary truncate block">
+                                {s.filename} · {(s.score * 100).toFixed(1)}%
+                              </span>
+                              <p className="text-[11px] text-text-muted leading-relaxed line-clamp-2">
+                                {s.content}
+                              </p>
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    )}
                   </div>
                 )}
 

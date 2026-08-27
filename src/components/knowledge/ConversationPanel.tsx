@@ -4,6 +4,7 @@ import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Spinner } from "../ui/Spinner";
+import { MarkdownContent } from "../ui/Markdown";
 import {
   useKbConversations,
   useClearConversations,
@@ -84,7 +85,11 @@ export function ConversationPanel({ kbId }: ConversationPanelProps) {
                       : "bg-bg-tertiary border border-border-primary"
                   }`}
                 >
-                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{c.content}</p>
+                  {isUser ? (
+                    <p className="text-sm leading-relaxed whitespace-pre-wrap">{c.content}</p>
+                  ) : (
+                    <MarkdownContent>{c.content}</MarkdownContent>
+                  )}
                   <p
                     className={`text-[10px] mt-2 tabular ${
                       isUser ? "text-white/70" : "text-text-muted"

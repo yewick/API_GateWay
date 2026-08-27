@@ -4,6 +4,7 @@ pub mod dashboard;
 pub mod export;
 pub mod knowledge;
 pub mod logs;
+pub mod mcp;
 pub mod security;
 pub mod server;
 pub mod services;
