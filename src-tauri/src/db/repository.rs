@@ -211,10 +211,10 @@ impl Repository {
                 .push(")");
         }
         if let Some(from) = date_from {
-            q.push(" AND created_at >= ").push_bind(from);
+            q.push(" AND substr(created_at, 1, 10) >= ").push_bind(from);
         }
         if let Some(to) = date_to {
-            q.push(" AND created_at <= ").push_bind(to);
+            q.push(" AND substr(created_at, 1, 10) <= ").push_bind(to);
         }
 
         q.push(" ORDER BY created_at DESC LIMIT ")
@@ -399,7 +399,7 @@ impl Repository {
                 error_message, is_stream, is_retry, created_at, request_body, forward_body,
                 response_choices, trace_id,
                 risk_level, risk_score, risk_summary, security_action, sanitized, blocked_reason)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&log.id)
         .bind(seq)

@@ -28,7 +28,6 @@ export const apiKeyApi = {
 
 interface GetLogsInput {
   keyword?: string;
-  api_key_name?: string;
   channel_name?: string;
   model?: string;
   mode?: string;

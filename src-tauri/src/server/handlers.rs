@@ -10,15 +10,6 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
-// 临时调试：写错误日志到文件
-fn debug_log(msg: &str) {
-    let path = std::path::PathBuf::from("/tmp/yeapi_debug.log");
-    let ts = chrono::Local::now().format("%H:%M:%S%.3f");
-    let line = format!("{} {}\n", ts, msg);
-    let _ = std::fs::OpenOptions::new().create(true).append(true).open(&path)
-        .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
-}
-
 use super::auth::key_is_expired;
 use super::router::SharedState;
 use crate::adaptor::{get_adaptor, ProxyRequest};
@@ -380,9 +371,6 @@ async fn handle_stream(
 
     let mut last_error: Option<String> = None;
 
-    debug_log(&format!("handle_stream: model={} body_size={} channels={}",
-        model, request_body.len(), selected_channels.len()));
-
     for (attempt, channel) in selected_channels.into_iter().take(max_attempts).enumerate() {
         let config = Dispatcher::channel_to_config(&channel);
         let adaptor = get_adaptor(&channel.channel_type);
@@ -392,18 +380,12 @@ async fn handle_stream(
             stream: true,
         };
 
-        debug_log(&format!("attempt={}: channel={} type={} url={}",
-            attempt, channel.name, channel.channel_type, config.base_url));
-
         match adaptor.forward_stream(&request, &config).await {
             Ok(resp) => {
                 let status = resp.status();
-                debug_log(&format!("upstream status={}", status));
                 if !status.is_success() {
                     // 上游返回错误（非 2xx），读错误体，尝试下一个渠道
                     let body_str = resp.text().await.unwrap_or_default();
-                    debug_log(&format!("upstream error body: {}",
-                        &body_str[..body_str.len().min(2000)]));
                     last_error = Some(format!("{}: {}", channel.name, body_str));
                     continue;
                 }
@@ -526,14 +508,12 @@ async fn handle_stream(
             }
             Err(e) => {
                 // 连接失败：记日志，尝试下一个渠道
-                debug_log(&format!("forward_stream error: {:?}", e));
                 last_error = Some(format!("{}: {}", channel.name, e));
             }
         }
     }
 
     // 所有渠道失败
-    debug_log(&format!("ALL CHANNELS FAILED: {:?}", last_error));
     error_response(502, &format!("All stream channels failed: {:?}", last_error))
 }
 

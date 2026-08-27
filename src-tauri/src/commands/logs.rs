@@ -5,7 +5,6 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct GetLogsInput {
-    pub api_key_name: Option<String>,
     pub channel_name: Option<String>,
     pub model: Option<String>,
     pub mode: Option<String>,
