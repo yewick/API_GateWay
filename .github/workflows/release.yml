@@ -59,6 +59,16 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Extract changelog for release body
+        id: changelog
+        shell: bash
+        run: |
+          {
+            echo 'body<<CHANGELOG_EOF'
+            awk '/^## /{c++} c==1{print} c==2{exit}' CHANGELOG.md
+            echo 'CHANGELOG_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -66,7 +76,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: 'YeAPI v__VERSION__'
-          releaseBody: '下载对应平台的安装包进行安装。'
+          releaseBody: ${{ steps.changelog.outputs.body }}
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
