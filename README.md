@@ -14,15 +14,19 @@ YeAPI 是一个基于 [Tauri v2](https://tauri.app) 的桌面应用：前端用 
 
 ### macOS 首次打开提示
 
-macOS 包为默认 ad-hoc 签名（未做 Apple 公证），从浏览器下载后会被系统打上隔离标记，首次打开可能提示「已损坏，无法打开」或「无法验证开发者」。这是 Gatekeeper 的正常拦截，按以下任一方式绕过即可：
+macOS 包为默认 ad-hoc 签名（未做 Apple 公证）。在 macOS 14.4+ / Sequoia 上，从浏览器下载后系统会把它判定为「已损坏，无法打开」，且**不再提供**右键「打开」或「系统设置 → 隐私与安全性 → 仍要打开」这类 GUI 绕过入口，只能在终端处理。
 
-- **命令行（推荐）**：先把 `YeAPI.app` 拖入「应用程序」文件夹，再执行
-  ```bash
-  xattr -dr com.apple.quarantine "/Applications/YeAPI.app"
-  ```
-  若仍不行，改用 `xattr -c "/Applications/YeAPI.app"` 清除全部扩展属性。
-- **右键打开**：在「访达」中右键点击 `YeAPI.app` →「打开」，在弹出的对话框再点一次「打开」。
-- **系统设置**：前往「系统设置 → 隐私与安全性」，在底部找到「仍要打开」。
+先把 `YeAPI.app` 拖入「应用程序」文件夹，再执行：
+
+```bash
+xattr -cr "/Applications/YeAPI.app"
+```
+
+然后双击打开即可。若仍提示损坏，再强制重新签名一次：
+
+```bash
+codesign --force --deep --sign - "/Applications/YeAPI.app"
+```
 
 > 若要彻底消除该提示，需使用 Apple Developer ID 证书签名并做公证，目前暂未配置。
 
