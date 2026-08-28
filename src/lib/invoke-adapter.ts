@@ -214,7 +214,7 @@ const emptyFallback = (cmd: string): Promise<any> => {
   }
   // RAG 问答 → 空结果
   if (cmd === "ask_knowledge_base") {
-    return Promise.resolve({ answer: "", sources: [], usage: null });
+    return Promise.resolve({ answer: "", sources: [], usage: null, retrieval_details: null });
   }
   // 仪表盘统计 → 零值
   if (cmd === "get_dashboard_stats") {

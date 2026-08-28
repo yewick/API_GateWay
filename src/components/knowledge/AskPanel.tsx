@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { Send, FileText, User, Bot, Loader2, ChevronDown, ChevronRight } from "lucide-react";
+import { Send, FileText, User, Bot, Loader2, ChevronDown, ChevronRight, SlidersHorizontal } from "lucide-react";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { Select } from "../ui/Select";
+import { Slider } from "../ui/Slider";
 import { EmptyState } from "../ui/EmptyState";
 import { MarkdownContent } from "../ui/Markdown";
 import { useAskKnowledgeBase } from "../../hooks/useKnowledge";
 import { useApiKeys } from "../../hooks/useApiKeys";
-import type { RagUsage, SearchResult } from "../../types";
+import type { RagUsage, SearchResult, RetrievalDetail } from "../../types";
 
 interface AskPanelProps {
   kbId: string;
@@ -18,12 +19,20 @@ interface ChatMessage {
   content: string;
   sources?: SearchResult[];
   usage?: RagUsage | null;
+  retrievalDetails?: RetrievalDetail[] | null;
 }
 
 const TOP_K_OPTIONS = [
   { value: "3", label: "Top 3" },
   { value: "5", label: "Top 5" },
   { value: "10", label: "Top 10" },
+  { value: "20", label: "Top 20" },
+];
+
+const SEARCH_MODE_OPTIONS = [
+  { value: "hybrid", label: "混合（hybrid）" },
+  { value: "vector", label: "向量（vector）" },
+  { value: "keyword", label: "关键词（keyword）" },
 ];
 
 export function AskPanel({ kbId }: AskPanelProps) {
@@ -35,6 +44,11 @@ export function AskPanel({ kbId }: AskPanelProps) {
   const [model, setModel] = useState("");
   const [topK, setTopK] = useState("5");
   const [expandedSources, setExpandedSources] = useState<Set<number>>(new Set());
+  const [searchMode, setSearchMode] = useState("hybrid");
+  const [vectorWeight, setVectorWeight] = useState(0.7);
+  const [keywordWeight, setKeywordWeight] = useState(0.3);
+  const [showSearchConfig, setShowSearchConfig] = useState(false);
+  const [expandedDetails, setExpandedDetails] = useState<Set<number>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -74,6 +88,26 @@ export function AskPanel({ kbId }: AskPanelProps) {
     });
   };
 
+  const toggleDetails = (i: number) => {
+    setExpandedDetails((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+  };
+
+  // 向量/关键词权重恒等于 1：拖动任一滑块，另一个自动互补。
+  const handleVectorWeight = (v: number) => {
+    setVectorWeight(v);
+    setKeywordWeight(Number((1 - v).toFixed(2)));
+  };
+
+  const handleKeywordWeight = (v: number) => {
+    setKeywordWeight(v);
+    setVectorWeight(Number((1 - v).toFixed(2)));
+  };
+
   const send = async () => {
     if (!question.trim()) return;
     const q = question.trim();
@@ -95,6 +129,8 @@ export function AskPanel({ kbId }: AskPanelProps) {
           topK: Number(topK),
           history,
           apiKeyId: apiKeyId || undefined,
+          searchMode,
+          ...(searchMode === "hybrid" ? { vectorWeight, keywordWeight } : {}),
         },
       });
       setMessages((prev) => [
@@ -104,6 +140,7 @@ export function AskPanel({ kbId }: AskPanelProps) {
           content: res.answer,
           sources: res.sources,
           usage: res.usage,
+          retrievalDetails: res.retrieval_details,
         },
       ]);
     } catch (err) {
@@ -143,7 +180,7 @@ export function AskPanel({ kbId }: AskPanelProps) {
                 </div>
               )}
               <div
-                className={`max-w-[80%] rounded-xl px-4 py-3 ${
+                className={`max-w-[80%] min-w-0 rounded-xl px-4 py-3 ${
                   msg.role === "user"
                     ? "bg-accent text-white"
                     : "bg-bg-tertiary border border-border-primary"
@@ -184,6 +221,47 @@ export function AskPanel({ kbId }: AskPanelProps) {
                                 {s.content}
                               </p>
                             </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {msg.retrievalDetails && msg.retrievalDetails.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-border-primary/60">
+                    <button
+                      type="button"
+                      onClick={() => toggleDetails(i)}
+                      className="flex items-center gap-1.5 w-full text-left text-[11px] font-medium text-text-muted hover:text-text-primary transition-colors"
+                    >
+                      {expandedDetails.has(i) ? (
+                        <ChevronDown size={12} className="flex-shrink-0" />
+                      ) : (
+                        <ChevronRight size={12} className="flex-shrink-0" />
+                      )}
+                      查看检索明细（{msg.retrievalDetails.length}）
+                    </button>
+                    {expandedDetails.has(i) && (
+                      <div className="mt-2 space-y-2">
+                        {msg.retrievalDetails.map((d) => (
+                          <div key={d.chunk_id} className="rounded-md bg-bg-primary/60 px-2.5 py-2">
+                            <div className="flex items-center gap-2 flex-wrap text-[10px] text-text-muted tabular">
+                              <FileText size={11} className="flex-shrink-0" />
+                              <span className="text-text-secondary truncate max-w-[160px] min-w-0">{d.filename}</span>
+                              <span>综合 {d.score.toFixed(3)}</span>
+                              {d.vector_score != null && <span>向量 {d.vector_score.toFixed(3)}</span>}
+                              {d.keyword_score != null && <span>关键词 {d.keyword_score.toFixed(3)}</span>}
+                              {d.symbol_name && (
+                                <span className="text-info break-all min-w-0">
+                                  {d.symbol_name}
+                                  {d.symbol_kind ? ` · ${d.symbol_kind}` : ""}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-text-muted leading-relaxed line-clamp-2 break-words mt-1">
+                              {d.snippet}
+                            </p>
                           </div>
                         ))}
                       </div>
@@ -254,7 +332,51 @@ export function AskPanel({ kbId }: AskPanelProps) {
               onChange={(e) => setTopK(e.target.value)}
             />
           </div>
+          <div className="relative">
+            <Button
+              variant="secondary"
+              onClick={() => setShowSearchConfig((v) => !v)}
+              className="h-9"
+            >
+              <SlidersHorizontal size={15} />
+              检索配置
+            </Button>
+            {showSearchConfig && (
+              <div className="absolute bottom-full left-0 mb-2 z-20 w-72 max-h-[60vh] overflow-y-auto p-3 border border-border-primary rounded-lg bg-bg-secondary shadow-lg space-y-3">
+                <Select
+                  label="检索模式"
+                  options={SEARCH_MODE_OPTIONS}
+                  value={searchMode}
+                  onChange={(e) => setSearchMode(e.target.value)}
+                />
+                {searchMode === "hybrid" && (
+                  <div className="space-y-3">
+                    <Slider
+                      label="向量权重"
+                      value={vectorWeight}
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      onChange={handleVectorWeight}
+                    />
+                    <Slider
+                      label="关键词权重"
+                      value={keywordWeight}
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      onChange={handleKeywordWeight}
+                    />
+                    <p className="text-[11px] text-text-muted">
+                      向量 + 关键词权重恒等于 1，拖动任一滑块自动互补
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
+
         <div className="flex items-end gap-2">
           <textarea
             ref={taRef}

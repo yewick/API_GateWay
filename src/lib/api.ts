@@ -129,7 +129,15 @@ export const knowledgeApi = {
   ask: (
     kbId: string,
     question: string,
-    options?: { model?: string; topK?: number; history?: ConversationMessage[]; apiKeyId?: string },
+    options?: {
+      model?: string;
+      topK?: number;
+      history?: ConversationMessage[];
+      apiKeyId?: string;
+      searchMode?: string;
+      vectorWeight?: number;
+      keywordWeight?: number;
+    },
   ) =>
     invoke<RagAnswer>("ask_knowledge_base", {
       kbId,
@@ -138,6 +146,9 @@ export const knowledgeApi = {
       topK: options?.topK ?? null,
       history: options?.history ?? null,
       apiKeyId: options?.apiKeyId ?? null,
+      searchMode: options?.searchMode ?? null,
+      vectorWeight: options?.vectorWeight ?? null,
+      keywordWeight: options?.keywordWeight ?? null,
     }),
   // 对话
   getConversations: (kbId: string) => invoke<KbConversation[]>("get_kb_conversations", { kbId }),

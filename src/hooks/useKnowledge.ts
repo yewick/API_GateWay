@@ -162,7 +162,15 @@ export const useAskKnowledgeBase = () => {
     }: {
       kbId: string;
       question: string;
-      options?: { model?: string; topK?: number; history?: ConversationMessage[]; apiKeyId?: string };
+      options?: {
+        model?: string;
+        topK?: number;
+        history?: ConversationMessage[];
+        apiKeyId?: string;
+        searchMode?: string;
+        vectorWeight?: number;
+        keywordWeight?: number;
+      };
     }) => knowledgeApi.ask(kbId, question, options),
     onSuccess: (_, { kbId }) =>
       qc.invalidateQueries({ queryKey: knowledgeKeys.conversations(kbId) }),

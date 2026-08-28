@@ -297,6 +297,18 @@ export interface RagAnswer {
   answer: string;
   sources: SearchResult[];
   usage: RagUsage | null;
+  retrieval_details: RetrievalDetail[] | null;
+}
+
+export interface RetrievalDetail {
+  chunk_id: string;
+  filename: string;
+  score: number;
+  vector_score: number | null;
+  keyword_score: number | null;
+  snippet: string;
+  symbol_name: string | null;
+  symbol_kind: string | null;
 }
 
 export interface ConversationMessage {
