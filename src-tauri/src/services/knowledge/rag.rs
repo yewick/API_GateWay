@@ -49,7 +49,8 @@ pub fn default_embedding_model(app: &AppHandle) -> String {
     DEFAULT_EMBEDDING_MODEL.to_string()
 }
 
-/// RAG 问答主流程：向量化 query → 检索 → 历史 → 上下文装配 → LLM 生成 → 持久化。
+/// RAG 问答主流程（默认配置）：hybrid 模式 + 默认权重 0.7/0.3。
+/// 保留为 [`ask_with_config`] 的薄封装，旧调用方（MCP / 命令 / HTTP）零改动。
 pub async fn ask(
     pool: &SqlitePool,
     app: &AppHandle,
@@ -62,6 +63,43 @@ pub async fn ask(
     context_limit_override: Option<u64>,
     api_key: Option<ApiKey>,
 ) -> Result<RagAnswer, String> {
+    ask_with_config(
+        pool,
+        app,
+        kb_id,
+        query,
+        chat_model,
+        top_k,
+        mcp_only,
+        history,
+        context_limit_override,
+        api_key,
+        retriever::VECTOR_WEIGHT,
+        retriever::KEYWORD_WEIGHT,
+        "hybrid",
+    )
+    .await
+}
+
+/// RAG 问答主流程（可配置检索模式与权重）：
+/// 向量化 query（keyword 模式跳过）→ 检索（hybrid/vector/keyword）→ 历史 → 上下文装配 → LLM 生成 → 持久化。
+/// `search_mode` 未知值回退 hybrid；`vector_weight`/`keyword_weight` 仅 hybrid 生效。
+pub async fn ask_with_config(
+    pool: &SqlitePool,
+    app: &AppHandle,
+    kb_id: &str,
+    query: &str,
+    chat_model: &str,
+    top_k: usize,
+    mcp_only: bool,
+    history: Option<&[ConversationMessage]>,
+    context_limit_override: Option<u64>,
+    api_key: Option<ApiKey>,
+    vector_weight: f32,
+    keyword_weight: f32,
+    search_mode: &str,
+) -> Result<RagAnswer, String> {
+    let mode = search_mode.trim().to_lowercase();
     let repo = KbRepository::new(pool.clone());
     let db = Arc::new(Repository::new(pool.clone()));
 
@@ -97,33 +135,89 @@ pub async fn ask(
         )
     };
 
-    // 2. 向量化 query（归属到选定密钥，计入日志/配额）
-    let vecs =
-        embedder::embed(&[query.to_string()], &embedding_model, embedding_channel_id.as_deref(), db.as_ref(), Some((api_key.id.as_str(), api_key.name.as_str())))
-            .await?;
-    let query_emb = vecs.into_iter().next().ok_or("向量化返回空结果")?;
-
-    // 3. 检索
-    let results = if kb_id.is_empty() {
-        retriever::search_all(&repo, query, &query_emb, top_k, mcp_only).await?
+    // 2. 向量化 query（keyword 模式无需向量，跳过这一次 embedding 调用）
+    let query_emb_opt: Option<Vec<f32>> = if mode == "keyword" {
+        None
     } else {
-        retriever::hybrid_search(
+        let vecs = embedder::embed(
+            &[query.to_string()],
+            &embedding_model,
+            embedding_channel_id.as_deref(),
+            db.as_ref(),
+            Some((api_key.id.as_str(), api_key.name.as_str())),
+        )
+        .await?;
+        Some(vecs.into_iter().next().ok_or("向量化返回空结果")?)
+    };
+
+    // 3. 检索（三模式，返回分项评分）
+    let scored: Vec<retriever::ScoredSearchResult> = if kb_id.is_empty() {
+        retriever::search_all_with_details(
             &repo,
-            kb_id,
             query,
-            &query_emb,
+            query_emb_opt.as_deref(),
             top_k,
-            retriever::VECTOR_WEIGHT,
-            retriever::KEYWORD_WEIGHT,
+            mcp_only,
+            vector_weight,
+            keyword_weight,
+            &mode,
         )
         .await?
+    } else {
+        match mode.as_str() {
+            "keyword" => retriever::keyword_only_search(&repo, kb_id, query, top_k)
+                .await?
+                .into_iter()
+                .map(|r| {
+                    let s = r.score;
+                    retriever::ScoredSearchResult {
+                        result: r,
+                        vector_score: None,
+                        keyword_score: Some(s),
+                    }
+                })
+                .collect(),
+            "vector" => match &query_emb_opt {
+                Some(emb) => retriever::vector_search(&repo, kb_id, emb, top_k)
+                    .await?
+                    .into_iter()
+                    .map(|r| {
+                        let s = r.score;
+                        retriever::ScoredSearchResult {
+                            result: r,
+                            vector_score: Some(s),
+                            keyword_score: None,
+                        }
+                    })
+                    .collect(),
+                None => Vec::new(),
+            },
+            _ => match &query_emb_opt {
+                Some(emb) => retriever::hybrid_search_with_details(
+                    &repo,
+                    kb_id,
+                    query,
+                    emb,
+                    top_k,
+                    vector_weight,
+                    keyword_weight,
+                )
+                .await?,
+                None => Vec::new(),
+            },
+        }
     };
+
+    // 提取检索结果（供上下文/持久化）与检索明细（供前端展示）
+    let results: Vec<SearchResult> = scored.iter().map(|s| s.result.clone()).collect();
+    let retrieval_details: Vec<RetrievalDetail> = scored.iter().map(retrieval_detail).collect();
 
     if results.is_empty() {
         return Ok(RagAnswer {
             answer: "知识库中没有找到相关内容。".to_string(),
             sources: Vec::new(),
             usage: None,
+            retrieval_details: None,
         });
     }
 
@@ -175,7 +269,34 @@ pub async fn ask(
             completion_tokens: u.completion_tokens,
             total_tokens: u.total_tokens,
         }),
+        retrieval_details: Some(retrieval_details),
     })
+}
+
+/// 由 [`retriever::ScoredSearchResult`] 组装 [`RetrievalDetail`]：截取正文摘要、回填符号信息。
+fn retrieval_detail(s: &retriever::ScoredSearchResult) -> RetrievalDetail {
+    let r = &s.result;
+    let snippet: String = r.content.chars().take(200).collect();
+    let symbol_name = r
+        .metadata
+        .get("symbol_name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let symbol_kind = r
+        .metadata
+        .get("symbol_kind")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    RetrievalDetail {
+        chunk_id: r.chunk_id.clone(),
+        filename: r.filename.clone(),
+        score: r.score,
+        vector_score: s.vector_score,
+        keyword_score: s.keyword_score,
+        snippet,
+        symbol_name,
+        symbol_kind,
+    }
 }
 
 /// 经 `proxy::handle_request`（密钥分发）的非流式 chat 调用。

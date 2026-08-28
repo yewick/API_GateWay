@@ -92,6 +92,9 @@ pub async fn ask_knowledge_base(
     top_k: Option<usize>,
     history: Option<Vec<ConversationMessage>>,
     api_key_id: Option<String>,
+    search_mode: Option<String>,
+    vector_weight: Option<f32>,
+    keyword_weight: Option<f32>,
 ) -> Result<RagAnswer, String> {
     let chat_model = model.unwrap_or_else(|| "gpt-4o".to_string());
     let top_k = top_k.unwrap_or(5).max(1);
@@ -109,7 +112,7 @@ pub async fn ask_knowledge_base(
         None => None,
     };
 
-    rag::ask(
+    rag::ask_with_config(
         &state.db.pool,
         &app,
         &kb_id,
@@ -120,6 +123,9 @@ pub async fn ask_knowledge_base(
         history.as_deref(),
         None,
         api_key,
+        vector_weight.unwrap_or(retriever::VECTOR_WEIGHT),
+        keyword_weight.unwrap_or(retriever::KEYWORD_WEIGHT),
+        search_mode.as_deref().unwrap_or("hybrid"),
     )
     .await
 }

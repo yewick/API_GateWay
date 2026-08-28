@@ -458,7 +458,7 @@ pub async fn ask(
     }
 
     let kb_id = input.kb_id.clone().unwrap_or_default();
-    let answer = rag::ask(
+    let answer = rag::ask_with_config(
         &shared.state.db.pool,
         &shared.app,
         &kb_id,
@@ -469,6 +469,9 @@ pub async fn ask(
         input.history.as_deref(),
         input.context_limit,
         Some(key_record),
+        input.vector_weight.unwrap_or(retriever::VECTOR_WEIGHT),
+        input.keyword_weight.unwrap_or(retriever::KEYWORD_WEIGHT),
+        input.search_mode.as_deref().unwrap_or("hybrid"),
     )
     .await
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;

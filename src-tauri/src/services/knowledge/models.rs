@@ -187,6 +187,15 @@ pub struct AskInput {
     /// 请求级上下文上限覆盖（token 数，>0 时优先于渠道/模型配置）
     #[serde(default)]
     pub context_limit: Option<u64>,
+    /// 检索模式："hybrid" / "vector" / "keyword"（未知值回退 hybrid）
+    #[serde(default)]
+    pub search_mode: Option<String>,
+    /// 向量权重（默认 0.7，仅 hybrid 生效）
+    #[serde(default)]
+    pub vector_weight: Option<f32>,
+    /// 关键词权重（默认 0.3，仅 hybrid 生效）
+    #[serde(default)]
+    pub keyword_weight: Option<f32>,
 }
 
 /// 会话消息（`AskInput.history` 的组成单元）
@@ -202,6 +211,29 @@ pub struct RagAnswer {
     pub answer: String,
     pub sources: Vec<SearchResult>,
     pub usage: Option<RagUsage>,
+    /// 检索明细（本次新增：分项评分 + 摘要 + 符号信息）。
+    /// 旧调用方 / 旧前端无此字段可安全忽略，序列化时为空则省略。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retrieval_details: Option<Vec<RetrievalDetail>>,
+}
+
+/// 单条 chunk 的检索明细：综合分 + 分项（向量/关键词）分 + 摘要 + 符号信息。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetrievalDetail {
+    pub chunk_id: String,
+    pub filename: String,
+    /// 最终综合分（向量/关键词/混合加权合并后的得分，越大越相关）
+    pub score: f32,
+    /// 向量分（仅 vector / hybrid 模式存在；keyword 模式为 `None`）
+    pub vector_score: Option<f32>,
+    /// 关键词分（仅 keyword / hybrid 模式存在；vector 模式为 `None`）
+    pub keyword_score: Option<f32>,
+    /// 正文摘要（截取前 200 字符）
+    pub snippet: String,
+    /// 代码符号名（可选）
+    pub symbol_name: Option<String>,
+    /// 代码符号类型（可选）
+    pub symbol_kind: Option<String>,
 }
 
 /// RAG 问答 Token 用量（自含，避免依赖 `adaptor::TokenUsage`）
@@ -355,5 +387,8 @@ mod tests {
         assert_eq!(input.max_rounds, 5);
         assert!(!input.deep_research);
         assert!(input.history.is_none());
+        assert!(input.search_mode.is_none());
+        assert!(input.vector_weight.is_none());
+        assert!(input.keyword_weight.is_none());
     }
 }

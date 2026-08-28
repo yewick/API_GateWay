@@ -115,6 +115,9 @@ pub fn run() {
             tauri::async_runtime::block_on(async move {
                 let db = db::Database::new(&handle).await;
 
+                // FTS5 索引从「原文」一次性重建为「CJK bigram」内容（幂等，见 migration 017）
+                crate::services::knowledge::ensure_fts_bigram_index(&db.pool).await;
+
                 let state = Arc::new(AppState {
                     db: Arc::new(db),
                     server_port: Arc::new(tokio::sync::RwLock::new(0)),

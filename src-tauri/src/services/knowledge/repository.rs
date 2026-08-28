@@ -8,6 +8,7 @@
 use sqlx::SqlitePool;
 
 use super::models::*;
+use super::tokenize;
 
 pub struct KbRepository {
     pool: SqlitePool,
@@ -106,10 +107,19 @@ impl KbRepository {
     }
 
     pub async fn delete_kb(&self, id: &str) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        // FTS 是独立表，无外键级联，需在删 chunk 前按 chunk_id 显式清理
+        sqlx::query(
+            "DELETE FROM kb_chunks_fts WHERE chunk_id IN (SELECT id FROM kb_chunks WHERE kb_id = ?)",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("DELETE FROM kb_knowledge_bases WHERE id = ?")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -376,6 +386,7 @@ impl KbRepository {
     }
 
     pub async fn create_chunk(&self, chunk: &KbChunk) -> Result<KbChunk, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO kb_chunks \
              (id, doc_id, kb_id, chunk_index, content, token_count, embedding, \
@@ -394,8 +405,21 @@ impl KbRepository {
         .bind(&chunk.symbol_name)
         .bind(&chunk.symbol_kind)
         .bind(&chunk.created_at)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+
+        // FTS5：content 存「CJK bigram 空格分词」后的文本，symbol_name 保留原文
+        let bigram = tokenize::tokenize_content(&chunk.content);
+        sqlx::query(
+            "INSERT INTO kb_chunks_fts(chunk_id, content, symbol_name) VALUES (?, ?, ?)",
+        )
+        .bind(&chunk.id)
+        .bind(&bigram)
+        .bind(chunk.symbol_name.clone().unwrap_or_default())
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
         Ok(chunk.clone())
     }
 
@@ -408,10 +432,19 @@ impl KbRepository {
     }
 
     pub async fn delete_chunks_by_doc(&self, doc_id: &str) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        // FTS 是独立表，需先按 chunk_id 清理，再删 chunk
+        sqlx::query(
+            "DELETE FROM kb_chunks_fts WHERE chunk_id IN (SELECT id FROM kb_chunks WHERE doc_id = ?)",
+        )
+        .bind(doc_id)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("DELETE FROM kb_chunks WHERE doc_id = ?")
             .bind(doc_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -432,14 +465,14 @@ impl KbRepository {
     }
 
     /// 关键词搜索（FTS5）：返回按 bm25 排名升序的命中。
-    /// 查询串先做引号转义，避免注入 FTS5 查询语法。
+    /// 查询串先做 CJK bigram 分词 + 引号包裹前缀 + OR 连接，提升中文召回。
     pub async fn search_fts(
         &self,
         kb_id: &str,
         query: &str,
         top_k: i64,
     ) -> Result<Vec<FtsHit>, sqlx::Error> {
-        let query = query.trim().replace('"', "\"\"");
+        let query = tokenize::build_fts_query(query.trim());
         sqlx::query_as::<_, FtsHit>(
             "SELECT c.id AS chunk_id, c.doc_id, c.content, bm25(kb_chunks_fts) AS rank \
              FROM kb_chunks_fts JOIN kb_chunks c ON c.id = kb_chunks_fts.chunk_id \
@@ -450,6 +483,32 @@ impl KbRepository {
         .bind(top_k)
         .fetch_all(&self.pool)
         .await
+    }
+
+    /// 全量重建 FTS 索引：清空 `kb_chunks_fts` 后按当前 `kb_chunks` 的正文重算 bigram 写入。
+    /// 用于「原文 → bigram」的一次性迁移（见 `ensure_fts_bigram_index`）。
+    pub async fn rebuild_fts(&self) -> Result<(), sqlx::Error> {
+        let chunks: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, content, symbol_name FROM kb_chunks",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM kb_chunks_fts").execute(&mut *tx).await?;
+        for (id, content, symbol_name) in chunks {
+            let bigram = tokenize::tokenize_content(&content);
+            sqlx::query(
+                "INSERT INTO kb_chunks_fts(chunk_id, content, symbol_name) VALUES (?, ?, ?)",
+            )
+            .bind(id)
+            .bind(bigram)
+            .bind(symbol_name.unwrap_or_default())
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     /// 取知识库内已向量化的 chunk（按确定性顺序：created_at, id），返回

@@ -15,6 +15,15 @@ use super::repository::KbRepository;
 pub const VECTOR_WEIGHT: f32 = 0.7;
 pub const KEYWORD_WEIGHT: f32 = 0.3;
 
+/// 带分项评分的检索结果：保留向量/关键词原始分，供 [`models::RetrievalDetail`] 展示。
+pub struct ScoredSearchResult {
+    pub result: SearchResult,
+    /// 向量相似度（原始分，未加权；仅 vector / hybrid 命中时存在）
+    pub vector_score: Option<f32>,
+    /// 关键词相关度（原始分，未加权；仅 keyword / hybrid 命中时存在）
+    pub keyword_score: Option<f32>,
+}
+
 /// 载入索引：`status == "ready"` 且 `index_path` 存在时加载，否则 `None`（触发线性回退）。
 pub async fn load_index(repo: &KbRepository, kb_id: &str) -> Option<IndexStore> {
     let meta = repo.get_index_meta(kb_id).await.ok()??;
@@ -154,6 +163,34 @@ pub async fn fts5_search(
     Ok(finish(&scored, &chunk_map, &doc_map, top_k))
 }
 
+/// 关键词检索（`search_mode = "keyword"` 的别名包装）。
+pub async fn keyword_only_search(
+    repo: &KbRepository,
+    kb_id: &str,
+    query: &str,
+    top_k: usize,
+) -> Result<Vec<SearchResult>, String> {
+    fts5_search(repo, kb_id, query, top_k).await
+}
+
+/// 混合检索（带分项评分）：并行取向量与关键词各 `top_k * 2`，加权合并返回 `ScoredSearchResult`。
+pub async fn hybrid_search_with_details(
+    repo: &KbRepository,
+    kb_id: &str,
+    query: &str,
+    query_emb: &[f32],
+    top_k: usize,
+    vector_weight: f32,
+    keyword_weight: f32,
+) -> Result<Vec<ScoredSearchResult>, String> {
+    let fetch_k = (top_k * 2).max(8);
+    let (vec_res, fts_res) = tokio::try_join!(
+        vector_search(repo, kb_id, query_emb, fetch_k),
+        fts5_search(repo, kb_id, query, fetch_k),
+    )?;
+    Ok(merge_hybrid_scored(vec_res, fts_res, vector_weight, keyword_weight, top_k))
+}
+
 /// 混合检索：并行取向量与关键词各 `top_k * 2`，按 chunk_id 加权合并取 top_k。
 pub async fn hybrid_search(
     repo: &KbRepository,
@@ -164,12 +201,11 @@ pub async fn hybrid_search(
     vector_weight: f32,
     keyword_weight: f32,
 ) -> Result<Vec<SearchResult>, String> {
-    let fetch_k = (top_k * 2).max(8);
-    let (vec_res, fts_res) = tokio::try_join!(
-        vector_search(repo, kb_id, query_emb, fetch_k),
-        fts5_search(repo, kb_id, query, fetch_k),
-    )?;
-    Ok(merge_hybrid(vec_res, fts_res, vector_weight, keyword_weight, top_k))
+    Ok(hybrid_search_with_details(repo, kb_id, query, query_emb, top_k, vector_weight, keyword_weight)
+        .await?
+        .into_iter()
+        .map(|s| s.result)
+        .collect())
 }
 
 /// 全局搜索：遍历所有知识库做混合检索，合并按 score 排序取 top_k。
@@ -181,32 +217,100 @@ pub async fn search_all(
     top_k: usize,
     mcp_only: bool,
 ) -> Result<Vec<SearchResult>, String> {
+    Ok(search_all_with_details(
+        repo,
+        query,
+        Some(query_emb),
+        top_k,
+        mcp_only,
+        VECTOR_WEIGHT,
+        KEYWORD_WEIGHT,
+        "hybrid",
+    )
+    .await?
+    .into_iter()
+    .map(|s| s.result)
+    .collect())
+}
+
+/// 全局搜索（带分项评分）：遍历所有知识库，按 `search_mode` 分派检索，合并排序取 top_k。
+/// `query_emb`：vector / hybrid 模式需要；keyword 模式可为 `None`。
+/// `mcp_only` 时只检索 `mcp_enabled == 1` 的知识库；未知 `search_mode` 回退 hybrid。
+pub async fn search_all_with_details(
+    repo: &KbRepository,
+    query: &str,
+    query_emb: Option<&[f32]>,
+    top_k: usize,
+    mcp_only: bool,
+    vector_weight: f32,
+    keyword_weight: f32,
+    search_mode: &str,
+) -> Result<Vec<ScoredSearchResult>, String> {
     let kbs = repo.get_all_kbs().await.map_err(|e| e.to_string())?;
-    let mut all: Vec<SearchResult> = Vec::new();
+    let mut all: Vec<ScoredSearchResult> = Vec::new();
     for kb in kbs {
         if mcp_only && kb.mcp_enabled != 1 {
             continue;
         }
-        if let Ok(mut res) = hybrid_search(
-            repo,
-            &kb.id,
-            query,
-            query_emb,
-            top_k,
-            VECTOR_WEIGHT,
-            KEYWORD_WEIGHT,
-        )
-        .await
-        {
-            all.append(&mut res);
-        }
+        let scored: Vec<ScoredSearchResult> = match search_mode {
+            "vector" => match query_emb {
+                Some(emb) => vector_search(repo, &kb.id, emb, top_k)
+                    .await
+                    .map(|rs| {
+                        rs.into_iter()
+                            .map(|r| {
+                                let s = r.score;
+                                ScoredSearchResult {
+                                    result: r,
+                                    vector_score: Some(s),
+                                    keyword_score: None,
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            },
+            "keyword" => keyword_only_search(repo, &kb.id, query, top_k)
+                .await
+                .map(|rs| {
+                    rs.into_iter()
+                        .map(|r| {
+                            let s = r.score;
+                            ScoredSearchResult {
+                                result: r,
+                                vector_score: None,
+                                keyword_score: Some(s),
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            _ => match query_emb {
+                Some(emb) => hybrid_search_with_details(
+                    repo,
+                    &kb.id,
+                    query,
+                    emb,
+                    top_k,
+                    vector_weight,
+                    keyword_weight,
+                )
+                .await
+                .unwrap_or_default(),
+                None => Vec::new(),
+            },
+        };
+        all.extend(scored);
     }
-    all.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+    all.sort_by(|a, b| b.result.score.partial_cmp(&a.result.score).unwrap_or(Ordering::Equal));
     all.truncate(top_k);
     Ok(all)
 }
 
 /// 纯函数：按 chunk_id 加权合并向量与关键词结果，返回按合并分降序的 top_k。
+/// 仅由单测使用（生产路径走 [`merge_hybrid_scored`]），故标注 `#[cfg(test)]`。
+#[cfg(test)]
 pub fn merge_hybrid(
     vec_results: Vec<SearchResult>,
     fts_results: Vec<SearchResult>,
@@ -214,23 +318,77 @@ pub fn merge_hybrid(
     keyword_weight: f32,
     top_k: usize,
 ) -> Vec<SearchResult> {
-    let mut merged: HashMap<String, (f32, SearchResult)> = HashMap::new();
+    merge_hybrid_scored(vec_results, fts_results, vector_weight, keyword_weight, top_k)
+        .into_iter()
+        .map(|s| s.result)
+        .collect()
+}
+
+/// 纯函数：按 chunk_id 加权合并向量与关键词结果，保留分项评分，返回按综合分降序的 top_k。
+/// - `result.score` = 加权综合分（`vector_score * vector_weight + keyword_score * keyword_weight`，未命中按 0）；
+/// - `vector_score` / `keyword_score` 保存各自原始分（未命中为 `None`）。
+pub fn merge_hybrid_scored(
+    vec_results: Vec<SearchResult>,
+    fts_results: Vec<SearchResult>,
+    vector_weight: f32,
+    keyword_weight: f32,
+    top_k: usize,
+) -> Vec<ScoredSearchResult> {
+    struct Acc {
+        result: Option<SearchResult>,
+        vec_raw: Option<f32>,
+        kw_raw: Option<f32>,
+    }
+    let mut merged: HashMap<String, Acc> = HashMap::new();
     for r in vec_results {
-        let entry = merged.entry(r.chunk_id.clone()).or_insert_with(|| (0.0, r.clone()));
-        entry.0 += r.score * vector_weight;
+        let entry = merged.entry(r.chunk_id.clone()).or_insert_with(|| Acc {
+            result: None,
+            vec_raw: None,
+            kw_raw: None,
+        });
+        if entry.result.is_none() {
+            entry.result = Some(r.clone());
+        }
+        entry.vec_raw = Some(r.score);
     }
     for r in fts_results {
-        let entry = merged.entry(r.chunk_id.clone()).or_insert_with(|| (0.0, r.clone()));
-        entry.0 += r.score * keyword_weight;
+        let entry = merged.entry(r.chunk_id.clone()).or_insert_with(|| Acc {
+            result: None,
+            vec_raw: None,
+            kw_raw: None,
+        });
+        if entry.result.is_none() {
+            entry.result = Some(r.clone());
+        }
+        entry.kw_raw = Some(r.score);
     }
-    let mut out: Vec<SearchResult> = merged
-        .into_values()
-        .map(|(score, mut r)| {
-            r.score = score;
-            r
+    let mut out: Vec<ScoredSearchResult> = merged
+        .into_iter()
+        .map(|(chunk_id, acc)| {
+            let mut result = acc.result.unwrap_or_else(|| SearchResult {
+                chunk_id,
+                doc_id: String::new(),
+                filename: String::new(),
+                content: String::new(),
+                score: 0.0,
+                metadata: serde_json::Value::Null,
+            });
+            let vec = acc.vec_raw.unwrap_or(0.0);
+            let kw = acc.kw_raw.unwrap_or(0.0);
+            result.score = vec * vector_weight + kw * keyword_weight;
+            ScoredSearchResult {
+                result,
+                vector_score: acc.vec_raw,
+                keyword_score: acc.kw_raw,
+            }
         })
         .collect();
-    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+    out.sort_by(|a, b| {
+        b.result
+            .score
+            .partial_cmp(&a.result.score)
+            .unwrap_or(Ordering::Equal)
+    });
     out.truncate(top_k);
     out
 }
@@ -285,6 +443,30 @@ mod tests {
         let fts = vec![sr("c", 0.7)];
         let merged = merge_hybrid(vec, fts, 0.7, 0.3, 2);
         assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_hybrid_scored_keeps_component_scores() {
+        let vec = vec![sr("a", 0.9), sr("b", 0.5)];
+        let fts = vec![sr("a", 0.8), sr("c", 0.7)];
+        let merged = merge_hybrid_scored(vec, fts, 0.7, 0.3, 10);
+        assert_eq!(merged.len(), 3);
+
+        // a：向量 0.9 / 关键词 0.8，综合 0.9*0.7 + 0.8*0.3 = 0.87
+        let a = merged.iter().find(|s| s.result.chunk_id == "a").unwrap();
+        assert!((a.result.score - 0.87).abs() < 1e-5);
+        assert!((a.vector_score.unwrap() - 0.9).abs() < 1e-5);
+        assert!((a.keyword_score.unwrap() - 0.8).abs() < 1e-5);
+
+        // b：只在向量路，keyword_score 为 None
+        let b = merged.iter().find(|s| s.result.chunk_id == "b").unwrap();
+        assert!(b.keyword_score.is_none());
+        assert!((b.result.score - 0.35).abs() < 1e-5);
+
+        // c：只在关键词路，vector_score 为 None
+        let c = merged.iter().find(|s| s.result.chunk_id == "c").unwrap();
+        assert!(c.vector_score.is_none());
+        assert!((c.result.score - 0.21).abs() < 1e-5);
     }
 
     #[test]

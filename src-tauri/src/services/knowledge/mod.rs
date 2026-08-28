@@ -23,6 +23,7 @@ pub mod repository;
 pub mod retriever;
 pub mod splitter;
 mod table;
+mod tokenize;
 mod xlsx;
 
 pub use embedder::{embed, validate_embedding_config};
@@ -31,6 +32,25 @@ pub use processor::{
     build_index, get_index_status, ingest_document, parse_document_background, process_document,
     ProcessOutcome, SourceInfo,
 };
+
+/// 一次性把 FTS5 索引从「原文」重建为「CJK bigram」内容（幂等）。
+/// 用 `PRAGMA user_version` 作迁移标记：`< 1` 表示尚未重建，重建成功后置为 `1`。
+/// 由 `lib.rs::run()` 在数据库迁移完成后调用一次。
+pub async fn ensure_fts_bigram_index(pool: &sqlx::SqlitePool) {
+    let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    if version >= 1 {
+        return;
+    }
+    let repo = repository::KbRepository::new(pool.clone());
+    if let Err(e) = repo.rebuild_fts().await {
+        tracing::warn!("FTS bigram 索引重建失败: {e}");
+        return;
+    }
+    let _ = sqlx::query("PRAGMA user_version = 1").execute(pool).await;
+}
 
 use async_trait::async_trait;
 use axum::routing::{delete, get, post};
