@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
+use tauri::AppHandle;
 
 use crate::db::repository::Repository;
 use crate::server::router::SharedState;
@@ -126,27 +127,59 @@ pub fn mcp_tools() -> Vec<Value> {
     vec![
         tool(
             "search_knowledge_base",
-            "Semantic search across a local knowledge base. Uses HNSW vector index for O(log n) retrieval. Returns matching text chunks with cosine similarity scores (0-1).",
+            "Search across a local knowledge base using hybrid (vector + keyword), vector-only, or keyword-only retrieval. Returns matching text chunks with similarity scores and per-component (vec/kw) score breakdowns. CJK bigram tokenization is used for Chinese queries.",
             json!({
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Natural language search query" },
                     "kb_id": { "type": "string", "description": "Specific KB ID. If omitted, searches all MCP-enabled KBs." },
-                    "top_k": { "type": "integer", "description": "Max results (default: 5)", "default": 5 }
+                    "top_k": { "type": "integer", "description": "Max results (default: 5)", "default": 5 },
+                    "search_mode": {
+                        "type": "string",
+                        "enum": ["hybrid", "vector", "keyword"],
+                        "description": "Retrieval mode: hybrid (default), vector (semantic only), keyword (FTS5 only).",
+                        "default": "hybrid"
+                    },
+                    "vector_weight": {
+                        "type": "number",
+                        "description": "Weight for vector similarity in hybrid mode (0.0-1.0, default: 0.7). Only effective when search_mode=hybrid.",
+                        "default": 0.7
+                    },
+                    "keyword_weight": {
+                        "type": "number",
+                        "description": "Weight for keyword (FTS5) score in hybrid mode (0.0-1.0, default: 0.3). Only effective when search_mode=hybrid.",
+                        "default": 0.3
+                    }
                 },
                 "required": ["query"]
             }),
         ),
         tool(
             "ask_knowledge_base",
-            "Ask a question and get an AI-generated answer based on retrieved context (RAG). Returns the answer plus source citations.",
+            "Ask a question and get an AI-generated answer based on retrieved context (RAG). Returns the answer, source citations, and per-chunk retrieval details (vec/kw scores + code symbols).",
             json!({
                 "type": "object",
                 "properties": {
                     "question": { "type": "string", "description": "The question to ask" },
                     "kb_id": { "type": "string", "description": "KB ID. If omitted, uses all MCP-enabled KBs." },
                     "top_k": { "type": "integer", "description": "Number of chunks to retrieve (default: 5)", "default": 5 },
-                    "model": { "type": "string", "description": "LLM model for answer generation" }
+                    "model": { "type": "string", "description": "LLM model for answer generation" },
+                    "search_mode": {
+                        "type": "string",
+                        "enum": ["hybrid", "vector", "keyword"],
+                        "description": "Retrieval mode: hybrid (default), vector (semantic only), keyword (FTS5 only).",
+                        "default": "hybrid"
+                    },
+                    "vector_weight": {
+                        "type": "number",
+                        "description": "Weight for vector similarity in hybrid mode (0.0-1.0, default: 0.7). Only effective when search_mode=hybrid.",
+                        "default": 0.7
+                    },
+                    "keyword_weight": {
+                        "type": "number",
+                        "description": "Weight for keyword (FTS5) score in hybrid mode (0.0-1.0, default: 0.3). Only effective when search_mode=hybrid.",
+                        "default": 0.3
+                    }
                 },
                 "required": ["question"]
             }),
@@ -297,7 +330,7 @@ async fn dispatch_jsonrpc_async(shared: &SharedState, req: &McpRequest) -> McpRe
         "initialize" => McpResponse::success(req.id.clone(), json!({
             "protocolVersion": "2024-11-05",
             "capabilities": { "tools": {} },
-            "serverInfo": { "name": "yeapi-mcp", "version": "0.1.0" },
+            "serverInfo": { "name": "yeapi-mcp", "version": "0.1.5" },
             "instructions": MCP_INSTRUCTIONS
         })),
         "notifications/initialized" => McpResponse::success(req.id.clone(), json!({})),
@@ -340,51 +373,58 @@ async fn handle_tool_call(
             }
             let kb_id = opt_str(args, "kb_id").unwrap_or("").to_string();
             let top_k = usize_arg(args, "top_k").unwrap_or(5).clamp(1, 100);
+            let search_mode = opt_str(args, "search_mode").unwrap_or("hybrid").to_lowercase();
+            let vector_weight = f32_arg(args, "vector_weight").unwrap_or(retriever::VECTOR_WEIGHT);
+            let keyword_weight = f32_arg(args, "keyword_weight").unwrap_or(retriever::KEYWORD_WEIGHT);
             let db = Repository::new(pool.clone());
 
-            // 确定 embedding 模型与指定渠道（kb_id 为空 → 全局默认）
-            let (embedding_model, embedding_channel_id) = if kb_id.is_empty() {
-                (rag::default_embedding_model(&app), None)
-            } else {
-                let kb = repo
-                    .get_kb(&kb_id)
-                    .await
-                    .map_err(|e| format!("读取知识库失败: {e}"))?;
-                (
-                    kb.embedding_model
-                        .clone()
-                        .filter(|m| !m.trim().is_empty())
-                        .unwrap_or_else(|| rag::default_embedding_model(&app)),
-                    kb.embedding_channel_id.clone(),
-                )
-            };
-
-            let vecs = embed(
-                &[query.clone()],
-                &embedding_model,
-                embedding_channel_id.as_deref(),
-                &db,
-                None,
-            )
-            .await?;
-            let query_emb = vecs.into_iter().next().ok_or("向量化返回空结果")?;
-
-            let results = if kb_id.is_empty() {
-                retriever::search_all(&repo, &query, &query_emb, top_k, true).await?
-            } else {
-                retriever::hybrid_search(
-                    &repo,
-                    &kb_id,
-                    &query,
-                    &query_emb,
-                    top_k,
-                    retriever::VECTOR_WEIGHT,
-                    retriever::KEYWORD_WEIGHT,
+            let scored: Vec<retriever::ScoredSearchResult> = if kb_id.is_empty() {
+                // 跨库检索：search_all_with_details 已按 search_mode 分派，keyword 模式无需向量化
+                let emb = if search_mode == "keyword" {
+                    None
+                } else {
+                    Some(embed_query(&app, &repo, &db, &query, "").await?)
+                };
+                retriever::search_all_with_details(
+                    &repo, &query, emb.as_deref(), top_k, true,
+                    vector_weight, keyword_weight, &search_mode,
                 )
                 .await?
+            } else {
+                match search_mode.as_str() {
+                    "keyword" => retriever::keyword_only_search(&repo, &kb_id, &query, top_k)
+                        .await?
+                        .into_iter()
+                        .map(|r| retriever::ScoredSearchResult {
+                            keyword_score: Some(r.score),
+                            vector_score: None,
+                            result: r,
+                        })
+                        .collect(),
+                    "vector" => {
+                        let emb = embed_query(&app, &repo, &db, &query, &kb_id).await?;
+                        retriever::vector_search(&repo, &kb_id, &emb, top_k)
+                            .await?
+                            .into_iter()
+                            .map(|r| retriever::ScoredSearchResult {
+                                vector_score: Some(r.score),
+                                keyword_score: None,
+                                result: r,
+                            })
+                            .collect()
+                    }
+                    _ => {
+                        let emb = embed_query(&app, &repo, &db, &query, &kb_id).await?;
+                        retriever::hybrid_search_with_details(
+                            &repo, &kb_id, &query, &emb, top_k,
+                            vector_weight, keyword_weight,
+                        )
+                        .await?
+                    }
+                }
             };
 
-            Ok(tool_text(format_search_results(&results)))
+            Ok(tool_text(format_scored_results(&scored)))
         }
         "ask_knowledge_base" => {
             let question = req_str(args, "question")?.to_string();
@@ -394,10 +434,17 @@ async fn handle_tool_call(
             let kb_id = opt_str(args, "kb_id").unwrap_or("").to_string();
             let top_k = usize_arg(args, "top_k").unwrap_or(5).clamp(1, 50);
             let model = opt_str(args, "model").unwrap_or("gpt-4o").to_string();
+            let search_mode = opt_str(args, "search_mode").unwrap_or("hybrid").to_lowercase();
+            let vector_weight = f32_arg(args, "vector_weight").unwrap_or(retriever::VECTOR_WEIGHT);
+            let keyword_weight = f32_arg(args, "keyword_weight").unwrap_or(retriever::KEYWORD_WEIGHT);
 
-            let answer = rag::ask(&pool, &app, &kb_id, &question, &model, top_k, true, None, None, None)
-                .await?;
-            Ok(tool_text(format_rag_answer(&answer)))
+            let answer = rag::ask_with_config(
+                &pool, &app, &kb_id, &question, &model, top_k, true,
+                None, None, None,
+                vector_weight, keyword_weight, &search_mode,
+            )
+            .await?;
+            Ok(tool_text(format_rag_answer_with_details(&answer)))
         }
         "list_knowledge_bases" => {
             let kbs = repo.get_all_kbs().await.map_err(|e| e.to_string())?;
@@ -581,29 +628,70 @@ fn i64_arg(args: &Value, key: &str) -> Option<i64> {
     args.get(key).and_then(|v| v.as_i64())
 }
 
+fn f32_arg(args: &Value, key: &str) -> Option<f32> {
+    args.get(key).and_then(|v| v.as_f64()).map(|v| v as f32)
+}
+
+/// 解析 embedding 模型（单库读 KB 配置，跨库用全局默认）并对 query 向量化。
+async fn embed_query(
+    app: &AppHandle,
+    repo: &KbRepository,
+    db: &Repository,
+    query: &str,
+    kb_id: &str,
+) -> Result<Vec<f32>, String> {
+    let (model, channel) = if kb_id.is_empty() {
+        (rag::default_embedding_model(app), None)
+    } else {
+        let kb = repo
+            .get_kb(kb_id)
+            .await
+            .map_err(|e| format!("读取知识库失败: {e}"))?;
+        (
+            kb.embedding_model
+                .clone()
+                .filter(|m| !m.trim().is_empty())
+                .unwrap_or_else(|| rag::default_embedding_model(app)),
+            kb.embedding_channel_id.clone(),
+        )
+    };
+    let vecs = embed(&[query.to_string()], &model, channel.as_deref(), db, None).await?;
+    vecs.into_iter()
+        .next()
+        .ok_or_else(|| "向量化返回空结果".to_string())
+}
+
 /// 把纯文本包装成 MCP 工具结果：`{ content: [{ type: "text", text }] }`。
 fn tool_text(text: String) -> Value {
     json!({ "content": [{ "type": "text", "text": text }] })
 }
 
-fn format_search_results(results: &[SearchResult]) -> String {
+fn format_scored_results(results: &[retriever::ScoredSearchResult]) -> String {
     if results.is_empty() {
         return "没有找到相关内容。".to_string();
     }
     let mut s = String::from("搜索结果：\n");
-    for (i, r) in results.iter().enumerate() {
-        s.push_str(&format!(
-            "{}. [来源: {} (相似度: {:.2})]\n{}\n",
-            i + 1,
-            r.filename,
-            r.score,
-            r.content
-        ));
+    for (i, scored) in results.iter().enumerate() {
+        let r = &scored.result;
+        let mut head = format!("{}. [{}] (score: {:.2}", i + 1, r.filename, r.score);
+        if let Some(vs) = scored.vector_score {
+            head.push_str(&format!(", vec: {:.2}", vs));
+        }
+        if let Some(ks) = scored.keyword_score {
+            head.push_str(&format!(", kw: {:.2}", ks));
+        }
+        head.push(')');
+        if scored.vector_score.is_none() && scored.keyword_score.is_some() {
+            head.push_str(" [keyword]");
+        } else if scored.vector_score.is_some() && scored.keyword_score.is_none() {
+            head.push_str(" [vector]");
+        }
+        s.push_str(&format!("{}\n{}\n", head, r.content));
     }
     s
 }
 
-fn format_rag_answer(answer: &RagAnswer) -> String {
+fn format_rag_answer_with_details(answer: &RagAnswer) -> String {
     let mut s = answer.answer.clone();
     if !answer.sources.is_empty() {
         s.push_str("\n\n来源引用：\n");
@@ -614,6 +702,27 @@ fn format_rag_answer(answer: &RagAnswer) -> String {
                 src.filename,
                 src.score
             ));
+        }
+    }
+    if let Some(details) = &answer.retrieval_details {
+        s.push_str("\n--- Retrieval Details ---\n");
+        for d in details {
+            let mut line = format!("• {} (score: {:.2}", d.filename, d.score);
+            if let Some(vs) = d.vector_score {
+                line.push_str(&format!(", vec: {:.2}", vs));
+            }
+            if let Some(ks) = d.keyword_score {
+                line.push_str(&format!(", kw: {:.2}", ks));
+            }
+            if let Some(sym) = &d.symbol_name {
+                line.push_str(&format!(", symbol: {}", sym));
+                if let Some(kind) = &d.symbol_kind {
+                    line.push_str(&format!(" ({})", kind));
+                }
+            }
+            line.push(')');
+            s.push_str(&line);
+            s.push('\n');
         }
     }
     s

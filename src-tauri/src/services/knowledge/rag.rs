@@ -49,38 +49,6 @@ pub fn default_embedding_model(app: &AppHandle) -> String {
     DEFAULT_EMBEDDING_MODEL.to_string()
 }
 
-/// RAG 问答主流程（默认配置）：hybrid 模式 + 默认权重 0.7/0.3。
-/// 保留为 [`ask_with_config`] 的薄封装，旧调用方（MCP / 命令 / HTTP）零改动。
-pub async fn ask(
-    pool: &SqlitePool,
-    app: &AppHandle,
-    kb_id: &str,
-    query: &str,
-    chat_model: &str,
-    top_k: usize,
-    mcp_only: bool,
-    history: Option<&[ConversationMessage]>,
-    context_limit_override: Option<u64>,
-    api_key: Option<ApiKey>,
-) -> Result<RagAnswer, String> {
-    ask_with_config(
-        pool,
-        app,
-        kb_id,
-        query,
-        chat_model,
-        top_k,
-        mcp_only,
-        history,
-        context_limit_override,
-        api_key,
-        retriever::VECTOR_WEIGHT,
-        retriever::KEYWORD_WEIGHT,
-        "hybrid",
-    )
-    .await
-}
-
 /// RAG 问答主流程（可配置检索模式与权重）：
 /// 向量化 query（keyword 模式跳过）→ 检索（hybrid/vector/keyword）→ 历史 → 上下文装配 → LLM 生成 → 持久化。
 /// `search_mode` 未知值回退 hybrid；`vector_weight`/`keyword_weight` 仅 hybrid 生效。

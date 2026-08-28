@@ -346,6 +346,21 @@ impl Repository {
         .await
         .unwrap_or(0);
 
+        let total_knowledge_bases: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM kb_knowledge_bases")
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0);
+
+        let total_kb_documents: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM kb_documents")
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0);
+
+        let total_kb_chunks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM kb_chunks")
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0);
+
         Ok(DashboardStats {
             today_requests,
             today_total_tokens,
@@ -355,6 +370,9 @@ impl Repository {
             total_api_keys,
             total_requests,
             total_tokens,
+            total_knowledge_bases,
+            total_kb_documents,
+            total_kb_chunks,
         })
     }
 

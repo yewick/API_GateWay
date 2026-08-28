@@ -81,6 +81,9 @@ pub struct DashboardStats {
     pub total_api_keys: i64,
     pub total_requests: i64,
     pub total_tokens: i64,
+    pub total_knowledge_bases: i64,
+    pub total_kb_documents: i64,
+    pub total_kb_chunks: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

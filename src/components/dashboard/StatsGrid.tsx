@@ -1,4 +1,4 @@
-import { Activity, Zap, BarChart3, Coins, Server, Timer, type LucideIcon } from "lucide-react";
+import { Activity, Zap, BarChart3, Coins, Server, Timer, Database, Layers, type LucideIcon } from "lucide-react";
 import { useDashboardStats } from "../../hooks/useDashboard";
 import { Card } from "../ui/Card";
 import { Spinner } from "../ui/Spinner";
@@ -18,6 +18,8 @@ const statItems: StatItem[] = [
   { key: "total_tokens", label: "累计 Token 消耗", icon: Coins, accentClass: "text-warning bg-warning/10" },
   { key: "active_channels", label: "活跃渠道", icon: Server, accentClass: "text-success bg-success/10" },
   { key: "avg_latency_ms", label: "平均延迟", icon: Timer, accentClass: "text-info bg-info/10" },
+  { key: "total_knowledge_bases", label: "知识库", icon: Database, accentClass: "text-info bg-info/10" },
+  { key: "total_kb_documents", label: "知识库文档", icon: Layers, accentClass: "text-success bg-success/10" },
 ];
 
 export function StatsGrid() {
@@ -25,8 +27,8 @@ export function StatsGrid() {
 
   if (isLoading) {
     return (
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {[0, 1, 2, 3, 4, 5].map((i) => (
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
           <Card key={i} className="h-[96px] flex items-center justify-center">
             <Spinner />
           </Card>
@@ -46,7 +48,7 @@ export function StatsGrid() {
   }
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
       {statItems.map((item) => {
         const Icon = item.icon;
         // 活跃渠道显示「活跃/总数」比例

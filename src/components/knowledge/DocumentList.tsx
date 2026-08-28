@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Upload, FileText, RotateCw, Trash2, Loader2, Eye } from "lucide-react";
+import { Upload, FileText, RotateCw, Trash2, Loader2, Eye, FolderInput } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "../ui/Button";
 import { Badge } from "../ui/Badge";
@@ -13,6 +13,7 @@ import {
   useUploadDocument,
   useIngestDocument,
   useDeleteDocument,
+  useImportSource,
   knowledgeKeys,
 } from "../../hooks/useKnowledge";
 import { docStatus, formatBytes, DOC_EXTENSIONS } from "../../lib/knowledge";
@@ -30,9 +31,12 @@ export function DocumentList({ kbId }: DocumentListProps) {
   const uploadMutation = useUploadDocument();
   const ingestMutation = useIngestDocument();
   const deleteMutation = useDeleteDocument();
+  const importMutation = useImportSource();
 
   const [deleting, setDeleting] = useState<KbDocument | null>(null);
   const [viewing, setViewing] = useState<KbDocument | null>(null);
+  const [dirOpen, setDirOpen] = useState(false);
+  const [dirPath, setDirPath] = useState("");
 
   // 存在解析/入库中的文档时，轮询刷新（后台解析回填后自动更新状态）
   const hasPending = docs.some((d) =>
@@ -92,17 +96,84 @@ export function DocumentList({ kbId }: DocumentListProps) {
     }
   };
 
+  const handleBrowseDir = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "选择导入目录",
+      });
+      if (typeof selected === "string") setDirPath(selected);
+    } catch {
+      // 对话框取消或不可用，忽略
+    }
+  };
+
+  const handleImportDir = async () => {
+    const path = dirPath.trim();
+    if (!path) {
+      toast.error("请先选择或输入目录路径");
+      return;
+    }
+    try {
+      const res = await importMutation.mutateAsync({
+        kbId,
+        input: { source_type: "local_dir", dir_path: path },
+      });
+      toast.success("导入完成", `已导入 ${res.file_count} 个文件`);
+      setDirOpen(false);
+      setDirPath("");
+      qc.invalidateQueries({ queryKey: knowledgeKeys.documents(kbId) });
+    } catch (err) {
+      toast.error("导入失败", (err as Error)?.message);
+    }
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center justify-between mb-4 flex-shrink-0">
         <p className="text-xs text-text-muted">
           共 {docs.length} 个文档 · 上传后自动解析，解析完成需手动「入库」向量化
         </p>
-        <Button onClick={handleUpload} loading={uploadMutation.isPending}>
-          <Upload size={15} />
-          上传文档
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="secondary"
+            onClick={() => setDirOpen((v) => !v)}
+            title="递归导入本地目录下的所有受支持文件"
+          >
+            <FolderInput size={15} />
+            导入目录
+          </Button>
+          <Button onClick={handleUpload} loading={uploadMutation.isPending}>
+            <Upload size={15} />
+            上传文档
+          </Button>
+        </div>
       </div>
+
+      {dirOpen && (
+        <div className="mb-4 p-3 rounded-xl border border-border-primary bg-bg-tertiary/50">
+          <p className="text-xs text-text-muted mb-2">
+            导入本地目录：递归扫描该目录下所有受支持文件并入库（自动解析、分块、向量化）。
+          </p>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={dirPath}
+              onChange={(e) => setDirPath(e.target.value)}
+              placeholder="/path/to/project/docs"
+              className="flex-1 px-3 py-2 text-sm bg-bg-tertiary border border-border-primary rounded-lg text-text-primary placeholder-text-muted outline-none focus:border-accent"
+            />
+            <Button variant="secondary" onClick={handleBrowseDir}>
+              <FolderInput size={15} />
+              浏览
+            </Button>
+            <Button onClick={handleImportDir} loading={importMutation.isPending}>
+              开始导入
+            </Button>
+          </div>
+        </div>
+      )}
 
       {isLoading ? (
         <div className="flex justify-center py-14">

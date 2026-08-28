@@ -47,7 +47,7 @@ export function McpTestBench() {
     run("initialize", "initialize", {
       protocolVersion: "2024-11-05",
       capabilities: {},
-      clientInfo: { name: "yeapi-console", version: "0.1.0" },
+      clientInfo: { name: "yeapi-console", version: "0.1.5" },
     });
 
   const handleToolsList = () => run("tools/list", "tools/list", {});

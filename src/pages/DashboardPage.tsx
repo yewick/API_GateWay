@@ -51,7 +51,7 @@ export const DashboardPage = () => {
       <StatsGrid />
 
       {/* 补充统计 */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
         <Card title="渠道总数">
           <p className="text-2xl font-bold text-text-primary tabular">
             {stats?.total_channels ?? 0}
@@ -70,6 +70,28 @@ export const DashboardPage = () => {
           </p>
           <p className="text-xs text-text-muted mt-1">网关处理总请求数</p>
         </Card>
+        <Card title="知识库">
+          <p className="text-2xl font-bold text-text-primary tabular">
+            {stats?.total_knowledge_bases ?? 0}
+          </p>
+          <p className="text-xs text-text-muted mt-1">
+            {stats && stats.total_knowledge_bases > 0
+              ? `${stats.total_knowledge_bases} 个知识库 · ${stats.total_kb_documents} 篇文档 · ${stats.total_kb_chunks} 个切片`
+              : "尚未创建知识库，点击下方「创建知识库」开始。"}
+          </p>
+        </Card>
+      </div>
+
+      {/* 快捷操作 */}
+      <div className="flex items-center gap-3 mt-4">
+        <Button variant="secondary" onClick={() => navigate("/knowledge")}>
+          创建知识库
+          <ArrowRight size={14} />
+        </Button>
+        <Button variant="secondary" onClick={() => navigate("/mcp")}>
+          MCP 服务
+          <ArrowRight size={14} />
+        </Button>
       </div>
 
       {/* 请求协议分布 */}

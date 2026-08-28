@@ -28,11 +28,10 @@ impl Database {
             .await
             .expect("failed to connect to database");
 
-        // 执行 migrations（编译时嵌入 SQL 文件）
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .ok();
+        // 执行 migrations（编译时嵌入 SQL 文件）；失败时记录日志而非静默吞掉
+        if let Err(e) = sqlx::migrate!("./migrations").run(&pool).await {
+            tracing::error!("数据库迁移失败: {e}");
+        }
 
         // Seed built-in security rules if table exists and is empty
         let _ = crate::security::rules::seed_builtin_rules(&pool).await;

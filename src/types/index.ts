@@ -68,6 +68,9 @@ export interface DashboardStats {
   total_api_keys: number;
   total_requests: number;
   total_tokens: number;
+  total_knowledge_bases: number;
+  total_kb_documents: number;
+  total_kb_chunks: number;
 }
 
 export interface Settings {

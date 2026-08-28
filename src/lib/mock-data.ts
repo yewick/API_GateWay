@@ -440,6 +440,9 @@ export const mockHandlers: Record<string, (args?: any) => Promise<any>> = {
       total_requests: requestLogs.length,
       total_tokens: requestLogs.reduce((s, l) => s + l.total_tokens, 0),
       avg_latency_ms: avgLatency,
+      total_knowledge_bases: 0,
+      total_kb_documents: 0,
+      total_kb_chunks: 0,
     };
   },
 

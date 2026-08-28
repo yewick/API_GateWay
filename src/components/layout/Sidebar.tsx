@@ -90,7 +90,7 @@ export function Sidebar() {
           <UpdateChecker collapsed={collapsed} />
         </div>
         {!collapsed && (
-          <p className="px-3 py-1 text-[10px] text-text-muted">YeAPI v0.1.0</p>
+          <p className="px-3 py-1 text-[10px] text-text-muted">YeAPI v0.1.5</p>
         )}
       </div>
     </aside>
