@@ -88,6 +88,8 @@ fn to_result(
         content: meta.content.clone(),
         score,
         metadata,
+        parent_id: meta.parent_id.clone(),
+        parent_content: None,
     })
 }
 
@@ -404,6 +406,8 @@ pub fn merge_hybrid_scored(
                 content: String::new(),
                 score: 0.0,
                 metadata: serde_json::Value::Null,
+                parent_id: None,
+                parent_content: None,
             });
             result.score = rrf;
             ScoredSearchResult {
@@ -453,6 +457,8 @@ mod tests {
             content: id.to_string(),
             score,
             metadata: serde_json::json!({}),
+            parent_id: None,
+            parent_content: None,
         }
     }
 

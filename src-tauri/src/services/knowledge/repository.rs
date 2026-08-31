@@ -366,7 +366,7 @@ impl KbRepository {
     /// 取知识库切片的轻量元数据（不含 `embedding` BLOB），供检索端按 chunk_id 富化。
     pub async fn get_chunks_meta(&self, kb_id: &str) -> Result<Vec<ChunkMeta>, sqlx::Error> {
         sqlx::query_as::<_, ChunkMeta>(
-            "SELECT id, doc_id, content, symbol_name, symbol_kind, metadata \
+            "SELECT id, doc_id, content, symbol_name, symbol_kind, metadata, parent_id \
              FROM kb_chunks WHERE kb_id = ? ORDER BY chunk_index ASC",
         )
         .bind(kb_id)
@@ -390,8 +390,8 @@ impl KbRepository {
         sqlx::query(
             "INSERT INTO kb_chunks \
              (id, doc_id, kb_id, chunk_index, content, token_count, embedding, \
-              embedding_dim, metadata, symbol_name, symbol_kind, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              embedding_dim, metadata, symbol_name, symbol_kind, created_at, parent_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&chunk.id)
         .bind(&chunk.doc_id)
@@ -405,6 +405,7 @@ impl KbRepository {
         .bind(&chunk.symbol_name)
         .bind(&chunk.symbol_kind)
         .bind(&chunk.created_at)
+        .bind(&chunk.parent_id)
         .execute(&mut *tx)
         .await?;
 
@@ -444,8 +445,51 @@ impl KbRepository {
             .bind(doc_id)
             .execute(&mut *tx)
             .await?;
+        // 父块随子块一并清理（无 FK 依赖，显式删除更稳）
+        sqlx::query("DELETE FROM kb_chunk_parents WHERE doc_id = ?")
+            .bind(doc_id)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// 批量插入父块（入库时与切片一起写入）。
+    pub async fn insert_parents_bulk(&self, parents: &[KbChunkParent]) -> Result<(), sqlx::Error> {
+        for p in parents {
+            sqlx::query(
+                "INSERT INTO kb_chunk_parents \
+                 (id, doc_id, kb_id, chunk_index, content, token_count, created_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&p.id)
+            .bind(&p.doc_id)
+            .bind(&p.kb_id)
+            .bind(p.chunk_index)
+            .bind(&p.content)
+            .bind(p.token_count)
+            .bind(&p.created_at)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// 按 id 批量取父块正文（问答时把命中子块补全为父块上下文）。
+    pub async fn get_parents_by_ids(&self, ids: &[String]) -> Result<Vec<KbChunkParent>, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, doc_id, kb_id, chunk_index, content, token_count, created_at \
+             FROM kb_chunk_parents WHERE id IN ({placeholders})"
+        );
+        let mut q = sqlx::query_as::<_, KbChunkParent>(&sql);
+        for id in ids {
+            q = q.bind(id);
+        }
+        q.fetch_all(&self.pool).await
     }
 
     /// 更新切片向量（f32 小端字节序序列化，暂不引入 bincode）

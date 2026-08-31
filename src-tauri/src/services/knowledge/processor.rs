@@ -200,6 +200,9 @@ pub async fn ingest_document(
     ingest_into_kb(pool, kb_id, doc_id, &parsed, app).await
 }
 
+/// 每个父块最多包含的子块数（与 `chunk_size*4` 的 token 目标共同约束父块大小）。
+const PARENT_MAX_CHILDREN: usize = 4;
+
 /// 对已存在（status=processing、content 已就绪）的文档执行：分块 → 落库 → 向量化 → 索引 → ready。
 /// 向量化失败时文档落为 `failed`（chunk 已持久化、embedding=None），并返回 Err。
 async fn ingest_into_kb(
@@ -228,6 +231,34 @@ async fn ingest_into_kb(
 
     // 3. 切片落库 + 回写文档 chunk 统计
     let now = crate::utils::time::now_iso();
+
+    // 父子块：父块 = 相邻子块窗口拼接（仅用于补全 LLM 上下文），子块仍作检索单元。
+    let parent_groups =
+        splitter::build_parents(&chunks, config.chunk_size.saturating_mul(4), PARENT_MAX_CHILDREN);
+    let parents: Vec<KbChunkParent> = parent_groups
+        .iter()
+        .enumerate()
+        .map(|(pg_i, group)| KbChunkParent {
+            id: format!("{doc_id}:p{pg_i}"),
+            doc_id: doc_id.to_string(),
+            kb_id: kb_id.to_string(),
+            chunk_index: pg_i as i64,
+            content: group.content.clone(),
+            token_count: group.token_count as i64,
+            created_at: now.clone(),
+        })
+        .collect();
+    // 子块下标 → 父块 id（回填 KbChunk.parent_id）
+    let parent_id_by_child: Vec<Option<String>> = {
+        let mut map = vec![None; chunks.len()];
+        for (pg_i, group) in parent_groups.iter().enumerate() {
+            for child_idx in group.child_range.clone() {
+                map[child_idx] = Some(format!("{doc_id}:p{pg_i}"));
+            }
+        }
+        map
+    };
+
     let kb_chunks: Vec<KbChunk> = chunks
         .iter()
         .enumerate()
@@ -247,10 +278,16 @@ async fn ingest_into_kb(
                 symbol_name: c.metadata.symbol_name.clone(),
                 symbol_kind: c.metadata.symbol_kind.clone(),
                 created_at: now.clone(),
+                parent_id: parent_id_by_child[i].clone(),
             }
         })
         .collect();
 
+    if !parents.is_empty() {
+        repo.insert_parents_bulk(&parents)
+            .await
+            .map_err(|e| format!("写入父块失败: {e}"))?;
+    }
     repo.insert_chunks_bulk(&kb_chunks)
         .await
         .map_err(|e| format!("写入切片失败: {e}"))?;

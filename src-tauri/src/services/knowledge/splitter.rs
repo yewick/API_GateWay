@@ -69,6 +69,66 @@ pub fn split_document(parsed: &ParsedDocument, config: &SplitConfig) -> Vec<Chun
     }
 }
 
+/// 父块分组结果：连续子块区间（左闭右开）+ 拼接后的父块正文。
+#[derive(Debug, Clone)]
+pub struct ParentGroup {
+    /// 子块区间（按 `chunks` 下标）
+    pub child_range: std::ops::Range<usize>,
+    pub content: String,
+    pub token_count: usize,
+}
+
+/// 把有序子块按累积 token 贪心聚合成父块（Parent/Child 检索的上下文补全）。
+///
+/// 目标：每个父块约 `parent_target_tokens`（建议 `chunk_size*4`），单父块最多 `max_children` 个子块；
+/// 父块正文 = 其子块正文以 `\n\n` 拼接。空列表返回空；单子块超目标时退化为「一子一父」。
+pub fn build_parents(
+    chunks: &[Chunk],
+    parent_target_tokens: usize,
+    max_children: usize,
+) -> Vec<ParentGroup> {
+    if chunks.is_empty() {
+        return Vec::new();
+    }
+    let target = parent_target_tokens.max(1);
+    let max_children = max_children.max(1);
+
+    let mut groups: Vec<ParentGroup> = Vec::new();
+    let mut start = 0usize;
+    let mut acc_tokens = 0usize;
+    let mut count = 0usize;
+
+    for (i, c) in chunks.iter().enumerate() {
+        let ct = c.token_count.max(1);
+        // 当前组非空且再塞一个会超 token 目标或子块数上限 → 封组，另起新组
+        if count > 0 && (acc_tokens + ct > target || count >= max_children) {
+            groups.push(finalize_parent(chunks, start, i));
+            start = i;
+            acc_tokens = 0;
+            count = 0;
+        }
+        acc_tokens += ct;
+        count += 1;
+    }
+    if count > 0 {
+        groups.push(finalize_parent(chunks, start, chunks.len()));
+    }
+    groups
+}
+
+fn finalize_parent(chunks: &[Chunk], start: usize, end: usize) -> ParentGroup {
+    let content = chunks[start..end]
+        .iter()
+        .map(|c| c.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    ParentGroup {
+        child_range: start..end,
+        token_count: token_count(&content),
+        content,
+    }
+}
+
 /// 通用文本分块：按行累积 token，超限 flush，保留重叠内容。
 ///
 /// 额外识别三类「应保持原子」的结构，避免被普通按行累积从中间切碎：
@@ -907,5 +967,42 @@ mod tests {
         let chunks = split_document(&doc, &cfg());
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].metadata.heading.as_deref(), Some("# A"));
+    }
+
+    fn mk_chunk(text: &str) -> Chunk {
+        Chunk {
+            content: text.to_string(),
+            token_count: token_count(text),
+            metadata: ChunkMetadata::default(),
+        }
+    }
+
+    #[test]
+    fn test_build_parents_groups_by_target() {
+        // 每块 16 字符 ≈ 4 token，目标 16 token、上限 4 → 每父块 4 子块
+        let chunks: Vec<Chunk> = (0..9)
+            .map(|i| mk_chunk(&format!("{:04}", i).repeat(4)))
+            .collect();
+        let groups = build_parents(&chunks, 16, 4);
+        assert_eq!(groups.len(), 3); // 4 + 4 + 1
+        assert_eq!(groups[0].child_range, 0..4);
+        assert_eq!(groups[1].child_range, 4..8);
+        assert_eq!(groups[2].child_range, 8..9);
+        // 父块正文以 \n\n 拼接其子块
+        assert!(groups[0].content.contains("\n\n"));
+    }
+
+    #[test]
+    fn test_build_parents_max_children() {
+        // 每块 1 token，目标巨大 → 受 max_children 约束
+        let chunks: Vec<Chunk> = (0..9).map(|i| mk_chunk(&format!("c{i}"))).collect();
+        let groups = build_parents(&chunks, 1000, 3);
+        assert_eq!(groups.len(), 3); // 3 + 3 + 3
+        assert!(groups.iter().all(|g| g.child_range.len() <= 3));
+    }
+
+    #[test]
+    fn test_build_parents_empty() {
+        assert!(build_parents(&[], 16, 4).is_empty());
     }
 }

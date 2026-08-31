@@ -4,6 +4,7 @@
 //! [`crate::core::proxy::handle_request`] 走密钥分发，与网关普通请求一致（安全扫描、渠道调度、
 //! 重试、配额扣减、日志），因此需要 `AppHandle` 读取安全/重试配置。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use sqlx::SqlitePool;
@@ -119,7 +120,7 @@ pub async fn ask_with_config(
     };
 
     // 3. 检索（三模式，返回分项评分）
-    let scored: Vec<retriever::ScoredSearchResult> = if kb_id.is_empty() {
+    let mut scored: Vec<retriever::ScoredSearchResult> = if kb_id.is_empty() {
         retriever::search_all_with_details(
             &repo,
             query,
@@ -175,6 +176,28 @@ pub async fn ask_with_config(
             },
         }
     };
+
+    // 父子块补全：命中子块按其 parent_id 批量取父块正文，回填到 result.parent_content
+    //（仅供 LLM 上下文装配；检索明细与 sources 仍保留子块正文）。
+    let parent_ids: Vec<String> = scored
+        .iter()
+        .filter_map(|s| s.result.parent_id.clone())
+        .collect();
+    let parent_map: HashMap<String, String> = if parent_ids.is_empty() {
+        HashMap::new()
+    } else {
+        repo.get_parents_by_ids(&parent_ids)
+            .await
+            .map_err(|e| format!("读取父块失败: {e}"))?
+            .into_iter()
+            .map(|p| (p.id, p.content))
+            .collect()
+    };
+    for s in &mut scored {
+        if let Some(pid) = &s.result.parent_id {
+            s.result.parent_content = parent_map.get(pid).cloned();
+        }
+    }
 
     // 提取检索结果（供上下文/持久化）与检索明细（供前端展示）
     let results: Vec<SearchResult> = scored.iter().map(|s| s.result.clone()).collect();
@@ -354,9 +377,11 @@ fn extract_answer(body: &serde_json::Value) -> Option<String> {
 fn build_context(results: &[SearchResult]) -> String {
     let mut out = String::new();
     for (i, r) in results.iter().enumerate() {
+        // 命中子块时优先用父块正文补全上下文（父子块检索），否则回退子块正文
+        let body = r.parent_content.as_deref().unwrap_or(&r.content);
         out.push_str(&format!(
             "[来源: {} (相关度: {:.2})]\n{}\n",
-            r.filename, r.score, r.content
+            r.filename, r.score, body
         ));
         if i + 1 < results.len() {
             out.push_str("---\n");
@@ -515,6 +540,8 @@ mod tests {
             content: content.into(),
             score,
             metadata: serde_json::json!({}),
+            parent_id: None,
+            parent_content: None,
         }
     }
 
@@ -552,6 +579,22 @@ mod tests {
         assert!(prompt.contains("## 知识库内容"));
         assert!(prompt.contains("## 问题"));
         assert!(prompt.contains("问题X"));
+    }
+
+    #[test]
+    fn test_build_context_prefers_parent_content() {
+        let mut r = sr("a", 0.9, "子块正文");
+        r.parent_content = Some("父块正文".to_string());
+        let ctx = build_context(&[r]);
+        assert!(ctx.contains("父块正文"));
+        assert!(!ctx.contains("子块正文"));
+    }
+
+    #[test]
+    fn test_build_context_falls_back_to_child_content() {
+        let r = sr("a", 0.9, "子块正文");
+        let ctx = build_context(&[r]);
+        assert!(ctx.contains("子块正文"));
     }
 
     #[test]

@@ -75,6 +75,8 @@ pub struct KbChunk {
     pub symbol_name: Option<String>,
     pub symbol_kind: Option<String>,
     pub created_at: String,
+    /// 父块 id（`kb_chunk_parents.id`）；旧数据无父块，恒为 `None`。
+    pub parent_id: Option<String>,
 }
 
 /// 处理任务（`kb_tasks`）
@@ -268,6 +270,19 @@ pub struct ChunkMeta {
     pub symbol_name: Option<String>,
     pub symbol_kind: Option<String>,
     pub metadata: String,
+    pub parent_id: Option<String>,
+}
+
+/// 父块（`kb_chunk_parents`）：相邻子块拼接成的更大上下文单元，仅用于补全 LLM 上下文。
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct KbChunkParent {
+    pub id: String,
+    pub doc_id: String,
+    pub kb_id: String,
+    pub chunk_index: i64,
+    pub content: String,
+    pub token_count: i64,
+    pub created_at: String,
 }
 
 /// 切片查看项（前端文档查看器用，不含 `embedding` BLOB）。
@@ -298,6 +313,12 @@ pub struct SearchResult {
     pub content: String,
     pub score: f32,
     pub metadata: serde_json::Value,
+    /// 父块 id（可选；旧数据无父块时省略）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    /// 父块正文（仅内存用于补全 LLM 上下文；`#[serde(skip)]` 不序列化到 sources/前端）
+    #[serde(skip)]
+    pub parent_content: Option<String>,
 }
 
 /// 多源导入输入（`source_type`：git / url / local_dir）
