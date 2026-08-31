@@ -139,7 +139,8 @@ export const useIngestDocument = () => {
   return useMutation({
     mutationFn: ({ kbId, docId }: { kbId: string; docId: string }) =>
       knowledgeApi.ingestDocument(kbId, docId),
-    onSuccess: (_, { kbId }) => invalidateKb(qc, kbId),
+    // 成功/失败都刷新：失败时也要立即把 failed 状态与错误信息显示出来，避免界面停在"待入库"
+    onSettled: (_data, _error, { kbId }) => invalidateKb(qc, kbId),
   });
 };
 

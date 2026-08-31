@@ -173,11 +173,16 @@ pub async fn ingest_document(
     if doc.kb_id != kb_id {
         return Err("文档不属于该知识库".to_string());
     }
-    if doc.status != "awaiting_review" {
+    if doc.status != "awaiting_review" && doc.status != "failed" {
         return Err(format!(
-            "文档状态为 {}，不能入库（需为 awaiting_review）",
+            "文档状态为 {}，不能入库（需为 awaiting_review 或 failed）",
             doc.status
         ));
+    }
+
+    // 重试：上次入库失败残留了切片/父块与知识库计数，先清理再重新入库
+    if doc.status == "failed" {
+        reset_failed_document(&repo, &doc, kb_id).await?;
     }
 
     // 用存储的 content/file_type 重构 ParsedDocument（不重复解析）
@@ -198,6 +203,24 @@ pub async fn ingest_document(
         .map_err(|e| e.to_string())?;
 
     ingest_into_kb(pool, kb_id, doc_id, &parsed, app).await
+}
+
+/// 重试失败文档前的清理：删除上次入库残留的切片/父块，回退知识库计数。
+/// 仅入库阶段失败（已产生切片、`chunk_count > 0`）才需清理；解析失败的文档无切片、计数未计入，直接跳过。
+async fn reset_failed_document(
+    repo: &KbRepository,
+    doc: &KbDocument,
+    kb_id: &str,
+) -> Result<(), String> {
+    if doc.chunk_count > 0 {
+        repo.delete_chunks_by_doc(&doc.id)
+            .await
+            .map_err(|e| format!("清理残留切片失败: {e}"))?;
+        repo.increment_kb_counts(kb_id, -1, -doc.chunk_count, -doc.token_count)
+            .await
+            .map_err(|e| format!("回退知识库计数失败: {e}"))?;
+    }
+    Ok(())
 }
 
 /// 每个父块最多包含的子块数（与 `chunk_size*4` 的 token 目标共同约束父块大小）。
@@ -386,10 +409,16 @@ async fn ingest_into_kb(
         }
     }
 
-    // 6. 增量索引（已构建过索引的知识库才需要；失败不影响文档就绪）
+    // 6. 索引（失败不影响文档就绪）
     if kb.index_status != "none" {
+        // 已构建过索引：增量追加本次切片向量
         if let Err(e) = append_to_index(app, pool, kb_id, &kb_chunks, &vecs).await {
             tracing::warn!("增量索引失败（不影响文档就绪）: {e}");
+        }
+    } else {
+        // 首次入库：全量构建索引，把状态从 none 推进到 ready（失败不影响文档就绪）
+        if let Err(e) = build_index(app, pool, kb_id).await {
+            tracing::warn!("首次构建索引失败（不影响文档就绪）: {e}");
         }
     }
 
@@ -500,7 +529,25 @@ async fn append_to_index(
 }
 
 /// 全量（重）构建 HNSW 索引：取全部已向量化 chunk，按确定性顺序组装并落盘。
+/// 失败时把索引状态回写为 `failed`，避免卡在 `building`。
 pub async fn build_index(
+    app: &AppHandle,
+    pool: &SqlitePool,
+    kb_id: &str,
+) -> Result<IndexSummary, String> {
+    match build_index_inner(app, pool, kb_id).await {
+        Ok(summary) => Ok(summary),
+        Err(e) => {
+            let _ = KbRepository::new(pool.clone())
+                .update_index_status(kb_id, "failed")
+                .await;
+            Err(e)
+        }
+    }
+}
+
+/// `build_index` 的实质逻辑：先置 `building`，成功后置 `ready`。
+async fn build_index_inner(
     app: &AppHandle,
     pool: &SqlitePool,
     kb_id: &str,

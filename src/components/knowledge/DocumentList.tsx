@@ -231,16 +231,20 @@ export function DocumentList({ kbId }: DocumentListProps) {
                   >
                     <Eye size={13} />
                   </Button>
-                  {doc.status === "awaiting_review" && (
+                  {(doc.status === "awaiting_review" || doc.status === "failed") && (
                     <Button
                       variant="secondary"
                       size="sm"
                       onClick={() => handleIngest(doc)}
                       loading={ingestMutation.isPending}
-                      title="入库（分块 + 向量化）"
+                      title={
+                        doc.status === "failed"
+                          ? "重试入库（分块 + 向量化）"
+                          : "入库（分块 + 向量化）"
+                      }
                     >
                       <RotateCw size={13} />
-                      入库
+                      {doc.status === "failed" ? "重试" : "入库"}
                     </Button>
                   )}
                   <Button
