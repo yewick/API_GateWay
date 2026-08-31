@@ -2,6 +2,8 @@
 
 use std::io::{Cursor, Read};
 
+use super::table::rows_to_markdown;
+
 /// 提取 .pptx 文本（纯文本，页间空行分隔）。
 pub fn extract_pptx(content: &[u8]) -> Result<String, String> {
     let mut archive = zip::ZipArchive::new(Cursor::new(content))
@@ -50,27 +52,67 @@ fn slide_number(name: &str) -> u32 {
 }
 
 /// `slideN.xml` → 段落文本（纯函数，供单测）。
+/// 表格（`<a:tbl>`）渲染为 Markdown 表格；表格内的段落不再重复单独输出。
 fn slide_xml_to_text(xml: &str) -> String {
     let doc = match roxmltree::Document::parse(xml) {
         Ok(d) => d,
         Err(_) => return String::new(),
     };
     let mut paras: Vec<String> = Vec::new();
-    for p in doc
-        .descendants()
-        .filter(|n| n.is_element() && n.tag_name().name() == "p")
-    {
-        let text: String = p
-            .descendants()
-            .filter(|n| n.is_element() && n.tag_name().name() == "t")
-            .filter_map(|n| n.text())
-            .collect();
-        let text = text.trim().to_string();
-        if !text.is_empty() {
-            paras.push(text);
+    for node in doc.descendants().filter(|n| n.is_element()) {
+        match node.tag_name().name() {
+            "tbl" => {
+                if let Some(md) = table_to_markdown(node) {
+                    paras.push(md);
+                }
+            }
+            "p" if !is_in_table(node) => {
+                let text: String = node
+                    .descendants()
+                    .filter(|n| n.is_element() && n.tag_name().name() == "t")
+                    .filter_map(|n| n.text())
+                    .collect();
+                let text = text.trim().to_string();
+                if !text.is_empty() {
+                    paras.push(text);
+                }
+            }
+            _ => {}
         }
     }
     paras.join("\n")
+}
+
+/// `<a:tbl>` → Markdown 表格（`a:tbl`→`a:tr`→`a:tc`→`a:p`/`a:t`）。
+fn table_to_markdown(tbl: roxmltree::Node) -> Option<String> {
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for tr in tbl
+        .descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == "tr")
+    {
+        let mut cells = Vec::new();
+        for tc in tr
+            .children()
+            .filter(|n| n.is_element() && n.tag_name().name() == "tc")
+        {
+            let cell: String = tc
+                .descendants()
+                .filter(|n| n.is_element() && n.tag_name().name() == "t")
+                .filter_map(|n| n.text())
+                .collect();
+            cells.push(cell.trim().to_string());
+        }
+        if !cells.is_empty() {
+            rows.push(cells);
+        }
+    }
+    rows_to_markdown(&rows)
+}
+
+/// 判断节点是否位于某个表格单元格内（用于跳过表格内段落的重复输出）。
+fn is_in_table(node: roxmltree::Node) -> bool {
+    node.ancestors()
+        .any(|a| a.is_element() && a.tag_name().name() == "tbl")
 }
 
 #[cfg(test)]
@@ -91,5 +133,32 @@ mod tests {
         let text = slide_xml_to_text(xml);
         assert!(text.contains("Hello World"));
         assert!(text.contains("第二行"));
+    }
+
+    #[test]
+    fn test_slide_xml_to_text_table() {
+        // <a:tbl> 应渲染为 Markdown 表格，表格内段落不再重复输出
+        let xml = r#"<?xml version="1.0"?><p:sld xmlns:p="urn:p" xmlns:a="urn:a">
+            <p:graphicFrame><a:graphic><a:graphicData>
+              <a:tbl>
+                <a:tr>
+                  <a:tc><a:txBody><a:p><a:r><a:t>A</a:t></a:r></a:p></a:txBody></a:tc>
+                  <a:tc><a:txBody><a:p><a:r><a:t>B</a:t></a:r></a:p></a:txBody></a:tc>
+                </a:tr>
+                <a:tr>
+                  <a:tc><a:txBody><a:p><a:r><a:t>1</a:t></a:r></a:p></a:txBody></a:tc>
+                  <a:tc><a:txBody><a:p><a:r><a:t>2</a:t></a:r></a:p></a:txBody></a:tc>
+                </a:tr>
+              </a:tbl>
+            </a:graphicData></a:graphic></p:graphicFrame>
+            <p:sp><p:txBody><a:p><a:r><a:t>正文</a:t></a:r></a:p></p:txBody></p:sp>
+        </p:sld>"#;
+        let text = slide_xml_to_text(xml);
+        assert!(text.contains("| A | B |"), "实际: {text}");
+        assert!(text.contains("| --- | --- |"), "实际: {text}");
+        assert!(text.contains("| 1 | 2 |"), "实际: {text}");
+        assert!(text.contains("正文"), "实际: {text}");
+        // 表格单元格文本不应作为独立段落重复出现
+        assert!(!text.lines().any(|l| l.trim() == "A"), "实际: {text}");
     }
 }

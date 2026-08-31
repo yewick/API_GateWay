@@ -171,7 +171,16 @@ pub async fn handle_request(
         let config = Dispatcher::channel_to_config(&channel);
         let adaptor = get_adaptor(&channel.channel_type);
         let attempt_start = Instant::now();
-        let result = adaptor.forward(&request, &config).await;
+        // 兜底超时：即使某个 adaptor 漏加 reqwest timeout，也确保不永久挂起，
+        // 超时返回 Err 从而推进重试/切换渠道（略大于 adaptor 内部 120s 的 total timeout）。
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(130),
+            adaptor.forward(&request, &config),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(anyhow::anyhow!("渠道 {} 上游超时（130s 无响应）", channel.name))
+        });
         let duration_ms = attempt_start.elapsed().as_millis() as u64;
         let is_retry = if attempt > 0 { 1 } else { 0 };
 

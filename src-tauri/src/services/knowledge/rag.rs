@@ -349,12 +349,13 @@ fn extract_answer(body: &serde_json::Value) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// 拼装上下文（文档 §3.5 格式）：`[来源: {filename} (相似度: {score:.2})]\n{content}`。
+/// 拼装上下文（文档 §3.5 格式）：`[来源: {filename} (相关度: {score:.2})]\n{content}`。
+/// 检索已改用 RRF 融合，`score` 语义为「相关度」（越大越相关），非余弦相似度。
 fn build_context(results: &[SearchResult]) -> String {
     let mut out = String::new();
     for (i, r) in results.iter().enumerate() {
         out.push_str(&format!(
-            "[来源: {} (相似度: {:.2})]\n{}\n",
+            "[来源: {} (相关度: {:.2})]\n{}\n",
             r.filename, r.score, r.content
         ));
         if i + 1 < results.len() {
@@ -543,7 +544,7 @@ mod tests {
     fn test_build_context_and_prompt() {
         let results = vec![sr("a", 0.9, "内容A"), sr("b", 0.8, "内容B")];
         let ctx = build_context(&results);
-        assert!(ctx.contains("[来源: f.md (相似度: 0.90)]"));
+        assert!(ctx.contains("[来源: f.md (相关度: 0.90)]"));
         assert!(ctx.contains("内容A"));
         assert!(ctx.contains("---"));
 

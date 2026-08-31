@@ -70,6 +70,11 @@ pub fn split_document(parsed: &ParsedDocument, config: &SplitConfig) -> Vec<Chun
 }
 
 /// 通用文本分块：按行累积 token，超限 flush，保留重叠内容。
+///
+/// 额外识别三类「应保持原子」的结构，避免被普通按行累积从中间切碎：
+/// - Markdown 表格（连续 `|` 行）：整表不切；超大时按数据行切、每段重复表头。
+/// - HTML 表格（`<table>`…`</table>`）：整表不切；超大时按 `</tr>` 切、重复表头。
+/// - 连续键值对（`key: value` 短行，≥2 行）：独立成块，不与正文混切。
 pub fn split_text(content: &str, config: &SplitConfig, metadata: &ChunkMetadata) -> Vec<Chunk> {
     if content.is_empty() {
         return Vec::new();
@@ -87,6 +92,67 @@ pub fn split_text(content: &str, config: &SplitConfig, metadata: &ChunkMetadata)
     let mut i = 0usize;
     while i < lines.len() {
         let line = lines[i];
+
+        // 特殊块：HTML 表格（跨行，含单行内闭合的情况）
+        if is_html_table_open(line) {
+            if !current.is_empty() {
+                chunks.push(build_chunk(&current, metadata, start, i - 1));
+                current = Vec::new();
+                current_chars = 0;
+            }
+            let block_start = i;
+            let mut j = i;
+            while j < lines.len() {
+                let closed = is_html_table_close(lines[j]);
+                j += 1;
+                if closed {
+                    break;
+                }
+            }
+            push_html_table(&lines[block_start..j], config, metadata, block_start, &mut chunks);
+            i = j;
+            start = j;
+            continue;
+        }
+
+        // 特殊块：Markdown 表格（≥2 行连续 `|` 行）
+        if is_md_table_line(line) {
+            let mut j = i;
+            while j < lines.len() && is_md_table_line(lines[j]) {
+                j += 1;
+            }
+            if j - i >= 2 {
+                if !current.is_empty() {
+                    chunks.push(build_chunk(&current, metadata, start, i - 1));
+                    current = Vec::new();
+                    current_chars = 0;
+                }
+                push_md_table(&lines[i..j], config, metadata, i, &mut chunks);
+                i = j;
+                start = j;
+                continue;
+            }
+        }
+
+        // 特殊块：连续键值对（≥2 行）
+        if is_kv_line(line) {
+            let mut j = i;
+            while j < lines.len() && is_kv_line(lines[j]) {
+                j += 1;
+            }
+            if j - i >= 2 {
+                if !current.is_empty() {
+                    chunks.push(build_chunk(&current, metadata, start, i - 1));
+                    current = Vec::new();
+                    current_chars = 0;
+                }
+                push_kv_block(&lines[i..j], config, metadata, i, &mut chunks);
+                i = j;
+                start = j;
+                continue;
+            }
+        }
+
         let line_chars = line.chars().count();
 
         // 单行超长：先 flush 已累积块，再按字符硬切，避免与 overlap 回退死循环
@@ -111,6 +177,7 @@ pub fn split_text(content: &str, config: &SplitConfig, metadata: &ChunkMetadata)
                 off += target_chars;
             }
             i += 1;
+            start = i;
             continue;
         }
 
@@ -153,8 +220,9 @@ pub fn split_text(content: &str, config: &SplitConfig, metadata: &ChunkMetadata)
     chunks
 }
 
-/// Markdown 分块：按标题切段，每段一个 chunk；chunk 正文前携带完整标题路径
-/// （祖先标题 + 当前标题）作上下文；纯标题段（无正文）跳过；超大段落递归 split_text。
+/// Markdown 分块：按标题切段，每段一个 chunk；标题路径只写入元数据（`heading`），
+/// 不拼进正文，避免顶层标题（如「宁波海曙生命医疗科技有限公司」）在每块正文重复、稀释向量。
+/// 纯标题段（无正文）跳过；超大段落递归 split_text（内部保留表格/键值对原子性）。
 pub fn split_markdown(
     content: &str,
     config: &SplitConfig,
@@ -219,34 +287,32 @@ pub fn split_markdown(
             continue;
         }
 
-        // 完整标题路径作为前缀，保证每个 chunk 自含层级上下文
+        // 完整标题路径只作元数据，不拼进正文
         let header: String = stack
             .iter()
             .map(|(lv, t)| format!("{} {}", "#".repeat(*lv), t))
             .collect::<Vec<_>>()
             .join("\n");
 
-        let full = format!("{header}\n{body}");
-        if full.chars().count() <= max_section_chars {
+        if body.chars().count() <= max_section_chars {
             chunks.push(Chunk {
-                token_count: token_count(&full),
-                content: full,
+                token_count: token_count(&body),
+                content: body,
                 metadata: ChunkMetadata {
-                    heading: Some(heading_text.clone()),
+                    heading: Some(header.clone()),
                     line_start: start,
                     line_end: body_end.saturating_sub(1),
                     ..metadata.clone()
                 },
             });
         } else {
-            // 超大段落：递归 split_text，完整标题路径作前缀
+            // 超大段落：递归 split_text（内部保留表格/键值对原子性）
             for c in split_text(&body, config, metadata) {
-                let content = format!("{header}\n{}", c.content);
                 chunks.push(Chunk {
-                    token_count: token_count(&content),
-                    content,
+                    token_count: c.token_count,
+                    content: c.content,
                     metadata: ChunkMetadata {
-                        heading: Some(heading_text.clone()),
+                        heading: Some(header.clone()),
                         line_start: start + 1 + c.metadata.line_start,
                         line_end: start + 1 + c.metadata.line_end,
                         ..metadata.clone()
@@ -257,6 +323,203 @@ pub fn split_markdown(
     }
 
     chunks
+}
+
+/// 判断是否为 Markdown 表格行（trim 后以 `|` 开头）。
+fn is_md_table_line(line: &str) -> bool {
+    line.trim_start().starts_with('|')
+}
+
+/// 判断是否为 Markdown 表头分隔行（`| --- | --- |`）。
+fn is_md_separator(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with('|') && t.contains("---")
+}
+
+/// 判断是否为 HTML 表格开/闭标签（含单行内 `<table>…</table>` 的情形）。
+fn is_html_table_open(line: &str) -> bool {
+    line.to_ascii_lowercase().contains("<table")
+}
+
+fn is_html_table_close(line: &str) -> bool {
+    line.to_ascii_lowercase().contains("</table")
+}
+
+/// 判断是否为「键: 值」短行（用于把连续规格词条独立成块）。
+/// 保守匹配：键无空白/斜杠且短、值较短且不以句末标点结尾，避免把「结论：该方法有效。」这类正文句误判。
+fn is_kv_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty() || t.contains("://") {
+        return false;
+    }
+    let Some(colon) = t.find([':', '：']) else {
+        return false;
+    };
+    // 冒号可能是全角（3 字节 UTF-8），按字符长度跳过，避免切到 char 边界内
+    let colon_len = t[colon..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+    let key = t[..colon].trim();
+    let val = t[colon + colon_len..].trim();
+    if key.is_empty() || val.is_empty() {
+        return false;
+    }
+    if key.chars().count() > 24 || val.chars().count() > 64 {
+        return false;
+    }
+    if key.chars().any(char::is_whitespace) || key.contains('/') {
+        return false;
+    }
+    if let Some(last) = val.chars().last() {
+        if matches!(last, '。' | '；' | ';' | '.') {
+            return false;
+        }
+    }
+    true
+}
+
+/// Markdown 表格落块：整表原子；超大时按数据行切、每段重复表头 + 分隔行。
+fn push_md_table(
+    block: &[&str],
+    config: &SplitConfig,
+    metadata: &ChunkMetadata,
+    line_start: usize,
+    out: &mut Vec<Chunk>,
+) {
+    let header_rows = if block.len() >= 2 && is_md_separator(block[1]) { 2 } else { 1 };
+    let header = block[..header_rows].join("\n");
+    let data = &block[header_rows..];
+    let target_chars = config.chunk_size.saturating_mul(4);
+    let header_chars = header.chars().count();
+    let first_data_line = line_start + header_rows;
+
+    let mut buf: Vec<&str> = Vec::new();
+    let mut buf_chars = 0usize;
+    let mut row_start = first_data_line;
+    for (j, row) in data.iter().enumerate() {
+        let rc = row.chars().count();
+        if !buf.is_empty() && buf_chars + rc + header_chars + 1 > target_chars {
+            out.push(md_table_chunk(&header, &buf, metadata, row_start, row_start + buf.len() - 1));
+            buf.clear();
+            buf_chars = 0;
+            row_start = first_data_line + j;
+        }
+        buf.push(*row);
+        buf_chars += rc + 1;
+    }
+    if !buf.is_empty() {
+        out.push(md_table_chunk(&header, &buf, metadata, row_start, row_start + buf.len() - 1));
+    }
+}
+
+fn md_table_chunk(
+    header: &str,
+    rows: &[&str],
+    metadata: &ChunkMetadata,
+    line_start: usize,
+    line_end: usize,
+) -> Chunk {
+    let content = format!("{header}\n{}", rows.join("\n"));
+    Chunk {
+        token_count: token_count(&content),
+        content,
+        metadata: ChunkMetadata { line_start, line_end, ..metadata.clone() },
+    }
+}
+
+/// HTML 表格落块：整表原子；超大时按 `</tr>` 切数据行、重复表头（首个 `</tr>` 之前的内容）。
+fn push_html_table(
+    block: &[&str],
+    config: &SplitConfig,
+    metadata: &ChunkMetadata,
+    line_start: usize,
+    out: &mut Vec<Chunk>,
+) {
+    let text = block.join("\n");
+    let line_end = line_start + block.len().saturating_sub(1);
+    let target_chars = config.chunk_size.saturating_mul(4);
+    if text.chars().count() <= target_chars {
+        out.push(Chunk {
+            token_count: token_count(&text),
+            content: text,
+            metadata: ChunkMetadata { line_start, line_end, ..metadata.clone() },
+        });
+        return;
+    }
+
+    // 超大 HTML 表（极少见）：表头 = 首个 `</tr>` 之前；数据行按 `</tr>` 切并重复表头。
+    let Some(header_end) = text.find("</tr>").map(|p| p + "</tr>".len()) else {
+        out.push(Chunk {
+            token_count: token_count(&text),
+            content: text,
+            metadata: ChunkMetadata { line_start, line_end, ..metadata.clone() },
+        });
+        return;
+    };
+    let header = text[..header_end].to_string();
+    let header_chars = header.chars().count();
+    let mut body_rows: Vec<String> = Vec::new();
+    let mut body_chars = 0usize;
+
+    for seg in text[header_end..].split("</tr>") {
+        let seg = seg.trim();
+        if seg.is_empty() {
+            continue;
+        }
+        let row = format!("{seg}</tr>");
+        let rc = row.chars().count();
+        if !body_rows.is_empty() && body_chars + rc + header_chars + 1 > target_chars {
+            out.push(html_table_chunk(&header, &body_rows, metadata, line_start, line_end));
+            body_rows.clear();
+            body_chars = 0;
+        }
+        body_chars += rc + 1;
+        body_rows.push(row);
+    }
+    if !body_rows.is_empty() {
+        out.push(html_table_chunk(&header, &body_rows, metadata, line_start, line_end));
+    }
+}
+
+fn html_table_chunk(
+    header: &str,
+    rows: &[String],
+    metadata: &ChunkMetadata,
+    line_start: usize,
+    line_end: usize,
+) -> Chunk {
+    let content = format!("{header}\n{}", rows.join("\n"));
+    Chunk {
+        token_count: token_count(&content),
+        content,
+        metadata: ChunkMetadata { line_start, line_end, ..metadata.clone() },
+    }
+}
+
+/// 连续键值对落块：独立成块（不含 overlap），超长按行切。
+fn push_kv_block(
+    block: &[&str],
+    config: &SplitConfig,
+    metadata: &ChunkMetadata,
+    line_start: usize,
+    out: &mut Vec<Chunk>,
+) {
+    let target_chars = config.chunk_size.saturating_mul(4);
+    let mut buf: Vec<&str> = Vec::new();
+    let mut buf_chars = 0usize;
+    let mut row_start = line_start;
+    for (j, line) in block.iter().enumerate() {
+        let rc = line.chars().count();
+        if !buf.is_empty() && buf_chars + rc + 1 > target_chars {
+            out.push(build_chunk(&buf, metadata, row_start, row_start + buf.len() - 1));
+            buf.clear();
+            buf_chars = 0;
+            row_start = line_start + j;
+        }
+        buf.push(*line);
+        buf_chars += rc + 1;
+    }
+    if !buf.is_empty() {
+        out.push(build_chunk(&buf, metadata, row_start, row_start + buf.len() - 1));
+    }
 }
 
 /// 解析 ATX 标题行：`#{1,6}` 后接空格/制表符或行尾（排除 `#hashtag`、`#!` 等误判）。
@@ -463,12 +726,83 @@ mod tests {
     }
 
     #[test]
+    fn test_split_text_markdown_table_atomic() {
+        // 小表格应整表一块，不因按行累积被拆开
+        let cfg = SplitConfig { chunk_size: 20, chunk_overlap: 0 };
+        let content = "| A | B |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n| 5 | 6 |";
+        let chunks = split_text(content, &cfg, &ChunkMetadata::default());
+        assert_eq!(chunks.len(), 1, "实际 {:?}", chunks.len());
+        let c = &chunks[0].content;
+        assert!(c.contains("| A | B |"));
+        assert!(c.contains("| 5 | 6 |"));
+    }
+
+    #[test]
+    fn test_split_text_markdown_table_header_repeated() {
+        // 超大表格按数据行切，但每块都重复表头 + 分隔行（修复 GSPR 表头丢失）
+        let cfg = SplitConfig { chunk_size: 8, chunk_overlap: 0 }; // 32 字符
+        let content = "| A | B |\n| --- | --- |\n| 111 | 222 |\n| 333 | 444 |\n| 555 | 666 |";
+        let chunks = split_text(content, &cfg, &ChunkMetadata::default());
+        assert!(chunks.len() >= 2, "实际 {}", chunks.len());
+        for c in &chunks {
+            assert!(
+                c.content.starts_with("| A | B |\n| --- | --- |"),
+                "每块都应带表头: {}",
+                c.content
+            );
+        }
+    }
+
+    #[test]
+    fn test_split_text_html_table_atomic() {
+        let cfg = SplitConfig { chunk_size: 20, chunk_overlap: 0 };
+        let content = "前文\n<table><tr><td>A</td><td>B</td></tr></table>\n后文";
+        let chunks = split_text(content, &cfg, &ChunkMetadata::default());
+        // HTML 表格（即使单行内闭合）应原子成块，不被从中间切
+        assert!(
+            chunks.iter().any(|c| c.content.contains("<table>") && c.content.contains("</table>")),
+            "实际 {:?}",
+            chunks.iter().map(|c| &c.content).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_split_text_kv_grouped() {
+        // 连续键值对应独立成块，不与前后正文混切
+        let cfg = SplitConfig { chunk_size: 20, chunk_overlap: 0 };
+        let content = "说明文字\nTipSize: 20G\nLength: 30mm\nGauge: 0.4\n结尾段落";
+        let chunks = split_text(content, &cfg, &ChunkMetadata::default());
+        assert!(
+            chunks.iter().any(|c| {
+                c.content.contains("TipSize: 20G")
+                    && c.content.contains("Length: 30mm")
+                    && c.content.contains("Gauge: 0.4")
+            }),
+            "实际 {:?}",
+            chunks.iter().map(|c| &c.content).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_split_text_kv_prose_not_grouped() {
+        // 正文句「结论：该方法有效。」不应被误判为键值对
+        let cfg = SplitConfig { chunk_size: 20, chunk_overlap: 0 };
+        let content = "结论：该方法有效。\n进一步说明";
+        let chunks = split_text(content, &cfg, &ChunkMetadata::default());
+        // 两句应合为一块（按普通行累积），而非各自独立
+        assert!(chunks.len() <= 2, "实际 {}", chunks.len());
+    }
+
+    #[test]
     fn test_split_markdown_by_heading() {
         let content = "# 标题一\n内容一\n内容二\n\n## 标题二\n更多内容";
         let chunks = split_markdown(content, &cfg(), &ChunkMetadata::default());
         assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].metadata.heading.as_deref(), Some("标题一"));
-        assert_eq!(chunks[1].metadata.heading.as_deref(), Some("标题二"));
+        // 标题路径只进元数据，不进正文
+        assert_eq!(chunks[0].metadata.heading.as_deref(), Some("# 标题一"));
+        assert_eq!(chunks[1].metadata.heading.as_deref(), Some("# 标题一\n## 标题二"));
+        assert!(chunks[0].content.contains("内容一"));
+        assert!(!chunks[0].content.contains("# 标题一"));
     }
 
     #[test]
@@ -477,11 +811,10 @@ mod tests {
         let content = "# 父标题\n## 子标题\n正文内容";
         let chunks = split_markdown(content, &cfg(), &ChunkMetadata::default());
         assert_eq!(chunks.len(), 1, "实际 {:?}", chunks.len());
-        assert_eq!(chunks[0].metadata.heading.as_deref(), Some("子标题"));
-        // 叶子 chunk 携带祖先标题上下文
-        assert!(chunks[0].content.contains("# 父标题"));
-        assert!(chunks[0].content.contains("## 子标题"));
+        assert_eq!(chunks[0].metadata.heading.as_deref(), Some("# 父标题\n## 子标题"));
+        // 正文不再携带标题前缀（去噪音）
         assert!(chunks[0].content.contains("正文内容"));
+        assert!(!chunks[0].content.contains("父标题"));
     }
 
     #[test]
@@ -501,7 +834,7 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert!(chunks[0].content.contains("开头说明"));
         assert!(chunks[0].metadata.heading.is_none());
-        assert_eq!(chunks[1].metadata.heading.as_deref(), Some("标题"));
+        assert_eq!(chunks[1].metadata.heading.as_deref(), Some("# 标题"));
     }
 
     #[test]
@@ -573,6 +906,6 @@ mod tests {
         };
         let chunks = split_document(&doc, &cfg());
         assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].metadata.heading.as_deref(), Some("A"));
+        assert_eq!(chunks[0].metadata.heading.as_deref(), Some("# A"));
     }
 }

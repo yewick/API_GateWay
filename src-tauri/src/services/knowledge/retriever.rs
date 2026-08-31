@@ -11,7 +11,9 @@ use super::index::{cosine_distance, IndexStore};
 use super::models::{ChunkMeta, SearchResult};
 use super::repository::KbRepository;
 
-/// 向量检索权重（默认 0.7 / 0.3）
+/// 向量/关键词权重（默认 0.7 / 0.3）。
+/// 混合检索已改用 RRF（见 [`merge_hybrid_scored`]），这两个常量仅作为 API 兼容参数继续传递、
+/// 不再参与融合计算；保留以维持 `search_all*` 的默认参数签名不变。
 pub const VECTOR_WEIGHT: f32 = 0.7;
 pub const KEYWORD_WEIGHT: f32 = 0.3;
 
@@ -324,16 +326,39 @@ pub fn merge_hybrid(
         .collect()
 }
 
-/// 纯函数：按 chunk_id 加权合并向量与关键词结果，保留分项评分，返回按综合分降序的 top_k。
-/// - `result.score` = 加权综合分（`vector_score * vector_weight + keyword_score * keyword_weight`，未命中按 0）；
-/// - `vector_score` / `keyword_score` 保存各自原始分（未命中为 `None`）。
+/// 纯函数：按 chunk_id 用 **RRF（Reciprocal Rank Fusion）** 合并向量与关键词结果，保留分项评分，
+/// 返回按融合分降序的 top_k。
+///
+/// 与旧的「向量/关键词原始分加权求和」不同，RRF 只看各流内的**名次**（1-based），消除两种评分
+/// 量纲差异带来的偏差：旧实现中纯关键词命中原始分上限仅 0.3，会被 5 个纯向量命中（上限 0.7）挤出
+/// top_k；RRF 下「关键词第 1 名」恒胜过「向量第 1 名」，直接命中「精确关键词被挤掉」的症状。
+///
+/// - `result.score` = `1/(K_VEC + vec_rank) + 1/(K_KW + kw_rank)`（未命中记 0）；
+/// - `K_KW=30 < K_VEC=60` 让关键词流每档贡献更大（轻微偏向精确关键词命中）；
+/// - `vector_score` / `keyword_score` 保存各自原始分（未命中为 `None`），供前端检索调试；
+/// - `vector_weight` / `keyword_weight` 仅为 API 兼容保留，RRF 下不参与计算。
 pub fn merge_hybrid_scored(
     vec_results: Vec<SearchResult>,
     fts_results: Vec<SearchResult>,
-    vector_weight: f32,
-    keyword_weight: f32,
+    _vector_weight: f32,
+    _keyword_weight: f32,
     top_k: usize,
 ) -> Vec<ScoredSearchResult> {
+    const K_VEC: f32 = 60.0;
+    const K_KW: f32 = 30.0;
+
+    // 名次映射：各自流内 1-based；未命中不在表中
+    let vec_rank: HashMap<String, usize> = vec_results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (r.chunk_id.clone(), i + 1))
+        .collect();
+    let kw_rank: HashMap<String, usize> = fts_results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (r.chunk_id.clone(), i + 1))
+        .collect();
+
     struct Acc {
         result: Option<SearchResult>,
         vec_raw: Option<f32>,
@@ -362,20 +387,25 @@ pub fn merge_hybrid_scored(
         }
         entry.kw_raw = Some(r.score);
     }
+
     let mut out: Vec<ScoredSearchResult> = merged
         .into_iter()
         .map(|(chunk_id, acc)| {
+            let rrf = match (vec_rank.get(&chunk_id), kw_rank.get(&chunk_id)) {
+                (Some(vr), Some(kr)) => 1.0 / (K_VEC + *vr as f32) + 1.0 / (K_KW + *kr as f32),
+                (Some(vr), None) => 1.0 / (K_VEC + *vr as f32),
+                (None, Some(kr)) => 1.0 / (K_KW + *kr as f32),
+                (None, None) => 0.0,
+            };
             let mut result = acc.result.unwrap_or_else(|| SearchResult {
-                chunk_id,
+                chunk_id: chunk_id.clone(),
                 doc_id: String::new(),
                 filename: String::new(),
                 content: String::new(),
                 score: 0.0,
                 metadata: serde_json::Value::Null,
             });
-            let vec = acc.vec_raw.unwrap_or(0.0);
-            let kw = acc.kw_raw.unwrap_or(0.0);
-            result.score = vec * vector_weight + kw * keyword_weight;
+            result.score = rrf;
             ScoredSearchResult {
                 result,
                 vector_score: acc.vec_raw,
@@ -427,14 +457,27 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_hybrid_weights_and_dedup() {
+    fn test_merge_hybrid_rrf_ranks_and_dedup() {
         let vec = vec![sr("a", 0.9), sr("b", 0.5)];
         let fts = vec![sr("a", 0.8), sr("c", 0.7)];
         let merged = merge_hybrid(vec, fts, 0.7, 0.3, 10);
-        // a 合并：0.9*0.7 + 0.8*0.3 = 0.63 + 0.24 = 0.87；c：0.21；b：0.35
+        // RRF：a 双路第 1（1/61 + 1/31 ≈ 0.04865）；c 关键词第 2（1/32 ≈ 0.03125）；b 向量第 2（1/62 ≈ 0.01613）
         assert_eq!(merged.len(), 3);
         assert_eq!(merged[0].chunk_id, "a");
-        assert!((merged[0].score - 0.87).abs() < 1e-5);
+        assert_eq!(merged[1].chunk_id, "c");
+        assert_eq!(merged[2].chunk_id, "b");
+        assert!(merged[0].score > merged[1].score && merged[1].score > merged[2].score);
+    }
+
+    #[test]
+    fn test_merge_hybrid_rrf_keyword_rank1_beats_vector_rank1() {
+        // 回归根因 1：纯关键词命中第 1 名应胜过纯向量命中第 1 名（旧加权实现下关键词会被挤出）
+        let vec = vec![sr("vec1", 0.95), sr("vec2", 0.9), sr("vec3", 0.85)];
+        let fts = vec![sr("kw1", 0.9)];
+        let merged = merge_hybrid(vec, fts, 0.7, 0.3, 5);
+        // kw1 关键词第 1：1/31 ≈ 0.03226；vec1 向量第 1：1/61 ≈ 0.01639
+        assert_eq!(merged[0].chunk_id, "kw1");
+        assert!(merged[0].score > merged[1].score);
     }
 
     #[test]
@@ -452,21 +495,21 @@ mod tests {
         let merged = merge_hybrid_scored(vec, fts, 0.7, 0.3, 10);
         assert_eq!(merged.len(), 3);
 
-        // a：向量 0.9 / 关键词 0.8，综合 0.9*0.7 + 0.8*0.3 = 0.87
+        // a：双路第 1，score = 1/61 + 1/31
         let a = merged.iter().find(|s| s.result.chunk_id == "a").unwrap();
-        assert!((a.result.score - 0.87).abs() < 1e-5);
+        assert!((a.result.score - (1.0 / 61.0 + 1.0 / 31.0)).abs() < 1e-6);
         assert!((a.vector_score.unwrap() - 0.9).abs() < 1e-5);
         assert!((a.keyword_score.unwrap() - 0.8).abs() < 1e-5);
 
-        // b：只在向量路，keyword_score 为 None
+        // b：只在向量路，keyword_score 为 None，score = 1/62
         let b = merged.iter().find(|s| s.result.chunk_id == "b").unwrap();
         assert!(b.keyword_score.is_none());
-        assert!((b.result.score - 0.35).abs() < 1e-5);
+        assert!((b.result.score - 1.0 / 62.0).abs() < 1e-6);
 
-        // c：只在关键词路，vector_score 为 None
+        // c：只在关键词路，vector_score 为 None，score = 1/32
         let c = merged.iter().find(|s| s.result.chunk_id == "c").unwrap();
         assert!(c.vector_score.is_none());
-        assert!((c.result.score - 0.21).abs() < 1e-5);
+        assert!((c.result.score - 1.0 / 32.0).abs() < 1e-6);
     }
 
     #[test]

@@ -68,6 +68,20 @@ pub trait Adaptor: Send + Sync {
     ) -> Result<reqwest::Response, anyhow::Error>;
 }
 
+/// 构建带超时的 HTTP 客户端：统一 `connect_timeout(10s)`，可选总超时。
+///
+/// - 非流式 `forward`：传 `Some(120)`，覆盖「连接→发送→读完整响应体」，防止上游「接受连接但不返回」
+///   时重试循环永久挂起。
+/// - 流式 `forward_stream`：传 `None`（仅连接超时），避免总超时截断合法的长流式输出。
+pub fn http_client(total_timeout_secs: Option<u64>) -> Result<reqwest::Client, reqwest::Error> {
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10));
+    if let Some(secs) = total_timeout_secs {
+        builder = builder.timeout(std::time::Duration::from_secs(secs));
+    }
+    builder.build()
+}
+
 pub fn get_adaptor(channel_type: &str) -> Box<dyn Adaptor> {
     match channel_type {
         "openai" => Box::new(openai::OpenAIAdaptor),

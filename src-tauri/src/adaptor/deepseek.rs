@@ -54,7 +54,7 @@ impl Adaptor for DeepSeekAdaptor {
     ) -> Result<(u16, serde_json::Value, Option<TokenUsage>), anyhow::Error> {
         let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
         let body = super::openai::apply_model_mapping(&request.body, &config.model_mapping);
-        let client = reqwest::Client::new();
+        let client = http_client(Some(120))?;
         let resp = client.post(&url)
             .header("Authorization", format!("Bearer {}", config.api_key))
             .header("Content-Type", "application/json")
@@ -79,7 +79,7 @@ impl Adaptor for DeepSeekAdaptor {
         let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
         let mut body = super::openai::apply_model_mapping(&request.body, &config.model_mapping);
         body["stream"] = serde_json::Value::Bool(true);
-        let client = reqwest::Client::new();
+        let client = http_client(None)?;
         let resp = client.post(&url)
             .header("Authorization", format!("Bearer {}", config.api_key))
             .header("Content-Type", "application/json")

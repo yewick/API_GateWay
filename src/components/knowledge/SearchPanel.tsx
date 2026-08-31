@@ -80,7 +80,7 @@ export function SearchPanel({ kbId }: SearchPanelProps) {
         <EmptyState
           icon={Search}
           title="尚未检索"
-          description="输入查询内容，将返回最相关的文档片段与相似度得分"
+          description="输入查询内容，将返回最相关的文档片段与相关度得分"
         />
       ) : results.length === 0 ? (
         <EmptyState icon={Search} title="无匹配结果" description="未找到相关内容，尝试更换关键词" />
@@ -100,7 +100,7 @@ export function SearchPanel({ kbId }: SearchPanelProps) {
                   {r.filename}
                 </span>
                 <span className="ml-auto text-xs text-accent tabular">
-                  {(r.score * 100).toFixed(1)}%
+                  {r.score.toFixed(3)}
                 </span>
               </div>
               <p className="text-xs text-text-secondary leading-relaxed whitespace-pre-wrap">

@@ -215,7 +215,7 @@ export function AskPanel({ kbId }: AskPanelProps) {
                             <FileText size={12} className="text-text-muted flex-shrink-0 mt-0.5" />
                             <div className="min-w-0">
                               <span className="text-[11px] text-text-secondary truncate block">
-                                {s.filename} · {(s.score * 100).toFixed(1)}%
+                                {s.filename} · {s.score.toFixed(3)}
                               </span>
                               <p className="text-[11px] text-text-muted leading-relaxed line-clamp-2">
                                 {s.content}

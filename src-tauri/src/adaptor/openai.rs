@@ -56,7 +56,7 @@ impl Adaptor for OpenAIAdaptor {
         // 应用模型映射：用户请求的模型名 → 上游真实模型名
         let body = apply_model_mapping(&request.body, &config.model_mapping);
 
-        let client = reqwest::Client::new();
+        let client = http_client(Some(120))?;
         let resp = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", config.api_key))
@@ -88,7 +88,7 @@ impl Adaptor for OpenAIAdaptor {
         let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
         let body = apply_model_mapping(&request.body, &config.model_mapping);
 
-        let client = reqwest::Client::new();
+        let client = http_client(None)?;
         let resp = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", config.api_key))

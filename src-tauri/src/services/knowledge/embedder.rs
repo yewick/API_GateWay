@@ -3,6 +3,7 @@
 //! 与聊天 adaptor 不同，本模块直接 POST `{base_url}/embeddings`（adaptor 硬编码
 //! `/chat/completions`，不可复用），仅复用「选渠道 + 取 base_url/api_key」。
 
+use crate::adaptor::http_client;
 use crate::adaptor::openai::apply_model_mapping;
 use crate::core::dispatcher::Dispatcher;
 use crate::db::models::{Channel, RequestLog};
@@ -156,7 +157,7 @@ async fn try_embed_with_channel(
         .map(|s| s.to_string())
         .unwrap_or_else(|| model.to_string());
 
-    let client = reqwest::Client::new();
+    let client = http_client(Some(30)).map_err(|e| format!("渠道 {} 创建 HTTP 客户端失败: {e}", channel.name))?;
     let resp = client
         .post(&url)
         .header("Authorization", format!("Bearer {}", channel.api_key))

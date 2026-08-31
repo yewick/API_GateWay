@@ -53,7 +53,7 @@ impl Adaptor for GeminiAdaptor {
 
         let gemini_body = convert_openai_to_gemini(&request.body);
 
-        let client = reqwest::Client::new();
+        let client = http_client(Some(120))?;
         let resp = client.post(&url)
             .header("Content-Type", "application/json")
             .json(&gemini_body)
@@ -88,7 +88,7 @@ impl Adaptor for GeminiAdaptor {
 
         let gemini_body = convert_openai_to_gemini(&request.body);
 
-        let client = reqwest::Client::new();
+        let client = http_client(None)?;
         let resp = client.post(&url)
             .header("Content-Type", "application/json")
             .json(&gemini_body)

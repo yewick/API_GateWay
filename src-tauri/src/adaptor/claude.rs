@@ -51,7 +51,7 @@ impl Adaptor for ClaudeAdaptor {
         let (model, mut claude_body) = build_claude_request(&request.body);
         claude_body["stream"] = serde_json::Value::Bool(request.stream);
 
-        let client = reqwest::Client::new();
+        let client = http_client(Some(120))?;
         let resp = client.post(&url)
             .header("x-api-key", &config.api_key)
             .header("anthropic-version", "2023-06-01")
@@ -85,7 +85,7 @@ impl Adaptor for ClaudeAdaptor {
         let (_model, mut claude_body) = build_claude_request(&request.body);
         claude_body["stream"] = serde_json::Value::Bool(true);
 
-        let client = reqwest::Client::new();
+        let client = http_client(None)?;
         let resp = client.post(&url)
             .header("x-api-key", &config.api_key)
             .header("anthropic-version", "2023-06-01")
