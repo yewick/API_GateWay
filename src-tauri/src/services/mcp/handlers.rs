@@ -330,7 +330,7 @@ async fn dispatch_jsonrpc_async(shared: &SharedState, req: &McpRequest) -> McpRe
         "initialize" => McpResponse::success(req.id.clone(), json!({
             "protocolVersion": "2024-11-05",
             "capabilities": { "tools": {} },
-            "serverInfo": { "name": "yeapi-mcp", "version": "0.1.5" },
+            "serverInfo": { "name": "yeapi-mcp", "version": "0.1.6" },
             "instructions": MCP_INSTRUCTIONS
         })),
         "notifications/initialized" => McpResponse::success(req.id.clone(), json!({})),

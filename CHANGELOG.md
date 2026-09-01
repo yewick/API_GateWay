@@ -4,6 +4,22 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.1.6] - 2026-09-01
+
+### Added
+
+- **父子块（Parent/Child）检索**：RAG 检索时自动补全父块上下文，并新增对应测试脚本。
+- 知识库入库失败可重试；索引自动构建并回写失败状态。
+
+### Fixed
+
+- 修复关键词检索失败与问答卡死。
+- 修复索引自动创建相关问题。
+
+### Changed
+
+- 文档：新增 macOS 首次打开 Gatekeeper 绕过说明（终端方式）。
+
 ## [0.1.5] - 2026-08-28
 
 自 `v0.1.0` 以来的重大版本：新增知识库 / RAG、MCP server 与新协议层。
