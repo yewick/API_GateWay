@@ -11,7 +11,8 @@
 use std::collections::HashSet;
 
 /// 判断是否为 CJK 表意文字（CJK 统一表意文字 / 扩展 A / 兼容表意文字）。
-fn is_cjk_char(ch: char) -> bool {
+/// 供 FTS 分词与 token 估算（`splitter::token_count`）共用，保证二者对「CJK 字符」的判定一致。
+pub(crate) fn is_cjk_char(ch: char) -> bool {
     ('\u{4e00}'..='\u{9fff}').contains(&ch)
         || ('\u{3400}'..='\u{4dbf}').contains(&ch)
         || ('\u{f900}'..='\u{faff}').contains(&ch)

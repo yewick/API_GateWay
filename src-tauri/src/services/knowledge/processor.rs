@@ -180,6 +180,14 @@ pub async fn ingest_document(
         ));
     }
 
+    // 内容为空的文档（解析阶段失败、未回写 content）无法入库：给出明确错误，
+    // 避免把空内容送入分块后在 `vecs[0]` 越界 panic。
+    if doc.content.trim().is_empty() {
+        let err = "文档无文本内容（可能解析失败），请重新上传".to_string();
+        let _ = repo.update_document_status(doc_id, "failed", Some(&err)).await;
+        return Err(err);
+    }
+
     // 重试：上次入库失败残留了切片/父块与知识库计数，先清理再重新入库
     if doc.status == "failed" {
         reset_failed_document(&repo, &doc, kb_id).await?;
@@ -251,6 +259,20 @@ async fn ingest_into_kb(
     };
     let chunks = splitter::split_document(parsed, &config);
     let total_tokens: i64 = chunks.iter().map(|c| c.token_count as i64).sum();
+
+    // 无可用文本（解析失败后重试空内容 / 空文件）→ 直接判失败，避免后续 `vecs[0]` 越界
+    if chunks.is_empty() {
+        return finish_failed(
+            &repo,
+            doc_id,
+            kb_id,
+            total_tokens,
+            chunks.len(),
+            "文档无可用文本内容，无法分块（可能解析失败或为空文件，请重新上传）".to_string(),
+            app,
+        )
+        .await;
+    }
 
     // 3. 切片落库 + 回写文档 chunk 统计
     let now = crate::utils::time::now_iso();
@@ -659,9 +681,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// 分批 embed 的 token 预算（估算值）。保守取 4096，适配上游 embedding 单数组上限
-/// （如智谱 embedding-2 为 8K token/数组；估算器 ~4 字符/token 对中文偏低，需留余量）。
-const EMBED_BATCH_MAX_TOKENS: usize = 4096;
+/// 分批 embed 的 token 预算（估算值）。embedding-3 单次请求最多 3072 tokens
+/// （embedding-2 为 512/8K），这里取 2560 留余量，避免估算误差或封批溢出触发上游「参数有误」。
+const EMBED_BATCH_MAX_TOKENS: usize = 2560;
 /// 分批 embed 的单批条目数上限（embedding-3 单数组最多 64 条，留余量）。
 const EMBED_BATCH_MAX_ITEMS: usize = 16;
 

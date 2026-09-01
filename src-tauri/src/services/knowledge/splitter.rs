@@ -3,12 +3,13 @@
 //! 三种策略：通用文本（`split_text`）、Markdown 按标题（`split_markdown`）、
 //! 代码按符号边界（`split_code_by_symbols`）。统一入口 [`split_document`]。
 //!
-//! Token 估算采用简单启发式 ~4 字符/token，避免引入重量级 tokenizer。
+//! Token 估算采用启发式：CJK 表意文字按 ~1 token/字，其余字符按 ~4 字符/token，避免引入重量级 tokenizer。
 
 use serde::Serialize;
 
 use super::code_parser::{extract_symbols, Symbol};
 use super::parser::ParsedDocument;
+use super::tokenize::is_cjk_char;
 
 /// 分块配置（`chunk_size`/`chunk_overlap` 单位为 token）
 #[derive(Debug, Clone)]
@@ -45,9 +46,19 @@ pub struct Chunk {
     pub metadata: ChunkMetadata,
 }
 
-/// 启发式 token 估算：约 4 字符 = 1 token
+/// 启发式 token 估算：CJK 表意文字按 ~1 token/字，其余字符按 ~4 字符/token。
+/// 比纯 `chars/4` 更贴近主流 BPE 分词器对中文的行为，避免中文文档被严重低估导致封批超限。
 pub fn token_count(text: &str) -> usize {
-    (text.chars().count() + 3) / 4
+    let mut cjk = 0usize;
+    let mut other = 0usize;
+    for ch in text.chars() {
+        if is_cjk_char(ch) {
+            cjk += 1;
+        } else {
+            other += 1;
+        }
+    }
+    cjk + (other + 3) / 4
 }
 
 /// 分块分发器：按文档类型选择策略。
@@ -742,6 +753,11 @@ mod tests {
         assert_eq!(token_count("1234"), 1);
         assert_eq!(token_count("12345"), 2);
         assert_eq!(token_count("12345678"), 2);
+        // CJK 按 ~1 token/字：中文不再被 chars/4 严重低估
+        assert_eq!(token_count("中文"), 2);
+        assert_eq!(token_count("中文测试"), 4);
+        // 中英混合：英文 5 字符 ≈ 2 token + 中文 2 字 = 4
+        assert_eq!(token_count("hello中文"), 4);
     }
 
     #[test]
