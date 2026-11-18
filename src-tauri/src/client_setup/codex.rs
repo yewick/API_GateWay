@@ -2,13 +2,15 @@
 
 use super::state::{self, ClientRecord, PreviousValues};
 use super::{ClientPaths, ClientSetupStatus};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::Path;
 use toml_edit::{value, DocumentMut, Item, Table, TableLike, Value as TomlValue};
 
 pub const PROVIDER_ID: &str = "yeapi";
 pub const PROVIDER_NAME: &str = "YeAPI";
 pub const WIRE_API: &str = "responses";
+/// 接入时生成的 Codex 模型目录（相对于 CODEX_HOME）。
+pub const CATALOG_FILENAME: &str = "yeapi-model-catalog.json";
 
 pub struct ProviderSpec<'a> {
     pub base_url: &'a str,
@@ -48,6 +50,10 @@ pub fn capture(existing: &str) -> PreviousValues {
             .map(str::to_string),
         model: doc.get("model").and_then(Item::as_str).map(str::to_string),
         disable_response_storage: doc.get("disable_response_storage").and_then(Item::as_bool),
+        model_catalog_json: doc
+            .get("model_catalog_json")
+            .and_then(Item::as_str)
+            .map(str::to_string),
         provider_toml,
         model_providers_existed: doc.get("model_providers").is_some(),
         config_existed,
@@ -69,6 +75,7 @@ pub fn merge_config(existing: &str, spec: &ProviderSpec<'_>) -> Result<String, S
         set_string(table, "model_provider", PROVIDER_ID);
         set_string(table, "model", spec.model);
         set_bool(table, "disable_response_storage", true);
+        set_string(table, "model_catalog_json", CATALOG_FILENAME);
     }
 
     let providers = ensure_model_providers(&mut doc)?;
@@ -83,6 +90,51 @@ pub fn merge_config(existing: &str, spec: &ProviderSpec<'_>) -> Result<String, S
     providers.insert(PROVIDER_ID, Item::Table(provider));
 
     Ok(doc.to_string())
+}
+
+/// 生成 Codex 能识别的模型目录。字段与 Codex 0.151 的 catalog 形状一致；
+/// 渠道里没有上下文窗口信息，使用 Codex 的默认值。
+pub fn build_model_catalog(models: &[String]) -> String {
+    let entries: Vec<Value> = models
+        .iter()
+        .enumerate()
+        .map(|(index, model)| {
+            json!({
+                "additional_speed_tiers": [],
+                "availability_nux": null,
+                "base_instructions": "You are Codex, a coding agent. You and the user share the same workspace and collaborate to achieve the user's goals.",
+                "context_window": 128000,
+                "default_reasoning_level": "high",
+                "default_reasoning_summary": "none",
+                "description": model,
+                "display_name": model,
+                "effective_context_window_percent": 95,
+                "experimental_supported_tools": [],
+                "input_modalities": ["text"],
+                "max_context_window": 128000,
+                "priority": 1000 + index as i64,
+                "service_tiers": [],
+                "shell_type": "shell_command",
+                "slug": model,
+                "support_verbosity": false,
+                "supported_in_api": true,
+                "supported_reasoning_levels": [
+                    { "description": "Disable Thinking", "effort": "none" },
+                    { "description": "Enabled Thinking", "effort": "high" }
+                ],
+                "supports_image_detail_original": false,
+                "supports_parallel_tool_calls": false,
+                "supports_reasoning_summaries": true,
+                "supports_search_tool": false,
+                "truncation_policy": { "limit": 10000, "mode": "bytes" },
+                "upgrade": null,
+                "visibility": "list"
+            })
+        })
+        .collect();
+
+    serde_json::to_string_pretty(&json!({ "models": entries }))
+        .unwrap_or_else(|_| "{\"models\":[]}".to_string())
 }
 
 /// 判断磁盘上是否存在 ChatGPT 登录（`auth_mode=="chatgpt"` 且 access_token 非空）。
@@ -122,6 +174,12 @@ pub fn status(
         .and_then(|doc| doc.get("model"))
         .and_then(Item::as_str)
         .map(str::to_string);
+    let model_catalog_json = doc
+        .as_ref()
+        .and_then(|doc| doc.get("model_catalog_json"))
+        .and_then(Item::as_str)
+        .map(str::to_string);
+    let catalog_matches = model_catalog_json.as_deref() == Some(CATALOG_FILENAME);
 
     let token = doc.as_ref().and_then(provider_token);
     let yeapi_provider_present = doc.as_ref().is_some_and(provider_exists);
@@ -149,6 +207,8 @@ pub fn status(
         requires_openai_auth: auth_logged_in,
         current_model_provider,
         current_model,
+        model_catalog_json,
+        catalog_matches,
         yeapi_provider_present,
         provider_token_hint: provider_token_hint.clone(),
         applied_api_key_id: record.map(|record| record.api_key_id.clone()),
@@ -213,6 +273,21 @@ pub fn disconnect_config(
                 doc.remove("disable_response_storage");
             }
         }
+    }
+
+    let current_catalog = doc
+        .get("model_catalog_json")
+        .and_then(Item::as_str)
+        .map(str::to_string);
+    if current_catalog.as_deref() == Some(CATALOG_FILENAME) {
+        match &record.previous.model_catalog_json {
+            Some(previous) => set_string(doc.as_table_mut(), "model_catalog_json", previous),
+            None => {
+                doc.remove("model_catalog_json");
+            }
+        }
+    } else if current_catalog.is_some() {
+        warnings.push("model_catalog_json 已被其他工具修改，未恢复".to_string());
     }
 
     let providers_empty = {
@@ -389,6 +464,10 @@ model = "gpt-4o"
 name = "OpenAI"
 base_url = "https://api.openai.com/v1"
 
+[shell_environment_policy.set]
+ANTHROPIC_BASE_URL = "http://127.0.0.1:15721"
+ANTHROPIC_AUTH_TOKEN = "PROXY_MANAGED"
+
 [projects."/tmp/demo"]
 trust_level = "trusted"
 "#;
@@ -396,9 +475,12 @@ trust_level = "trusted"
         assert!(output.contains("# 我的配置"));
         assert!(output.contains("model_provider = \"yeapi\" # 原来的 provider"));
         assert!(output.contains("[model_providers.openai]"));
+        assert!(output.contains("[shell_environment_policy.set]"));
+        assert!(output.contains("ANTHROPIC_BASE_URL = \"http://127.0.0.1:15721\""));
         assert!(output.contains("[projects.\"/tmp/demo\"]"));
         assert!(output.contains("experimental_bearer_token = \"sk-yeapi-test\""));
         assert!(output.contains("disable_response_storage = true"));
+        assert!(output.contains("model_catalog_json = \"yeapi-model-catalog.json\""));
     }
 
     #[test]
@@ -450,8 +532,32 @@ trust_level = "trusted"
         assert!(restored.contains("model_provider = \"openai\""));
         assert!(restored.contains("model = \"gpt-4o\""));
         assert!(!restored.contains("[model_providers.yeapi]"));
+        assert!(!restored.contains("model_catalog_json"));
         assert!(!output.remove_config_file);
         assert!(output.warnings.is_empty());
+    }
+
+    #[test]
+    fn disconnect_restores_previous_catalog() {
+        let original = "model_provider = \"openai\"\nmodel_catalog_json = \"old-catalog.json\"\n";
+        let applied = merge_config(original, &spec("k1")).unwrap();
+        assert!(applied.contains("model_catalog_json = \"yeapi-model-catalog.json\""));
+        let fp = state::fingerprint("k1");
+        let record = record(capture(original), "gpt-5", &fp);
+
+        let (restored, _) = disconnect_config(&applied, &record).unwrap();
+        assert!(restored.contains("model_catalog_json = \"old-catalog.json\""));
+    }
+
+    #[test]
+    fn model_catalog_contains_every_model() {
+        let catalog = build_model_catalog(&["a".to_string(), "b".to_string()]);
+        let value: Value = serde_json::from_str(&catalog).unwrap();
+        let models = value["models"].as_array().unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0]["slug"], "a");
+        assert_eq!(models[1]["slug"], "b");
+        assert_eq!(models[0]["display_name"], "a");
     }
 
     #[test]

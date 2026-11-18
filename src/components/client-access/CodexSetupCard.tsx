@@ -181,16 +181,17 @@ export function CodexSetupCard({
           </Notice>
         )}
 
-        {status.applied && !status.applied_api_key_valid && (
-          <Notice tone="danger">
-            接入使用的密钥已被删除、禁用或过期，请重新接入。
+        {status.applied && !status.catalog_matches && (
+          <Notice tone="warning">
+            模型目录仍指向 {status.model_catalog_json ?? "未设置"}
+            ，Codex 的模型菜单可能包含 YeAPI 不支持的模型。请重新接入以生成
+            yeapi-model-catalog.json。
           </Notice>
         )}
 
-        {status.auth_logged_in && (
-          <Notice tone="info">
-            检测到本机存在 ChatGPT 登录，将写入 requires_openai_auth =
-            true；接入不会修改 auth.json。
+        {status.applied && !status.applied_api_key_valid && (
+          <Notice tone="danger">
+            接入使用的密钥已被删除、禁用或过期，请重新接入。
           </Notice>
         )}
 
@@ -235,6 +236,15 @@ export function CodexSetupCard({
             />
           )}
         </div>
+
+        {preview?.warning && (
+          <Notice tone="warning">{preview.warning}</Notice>
+        )}
+
+        <p className="text-xs text-text-muted">
+          以下仅显示将写入 / 覆盖的键；文件中其余配置、注释和其他 provider
+          保持不变。
+        </p>
 
         <ConfigPreview
           path={preview?.config_path ?? status.config_path}

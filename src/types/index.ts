@@ -423,6 +423,8 @@ export interface ClientSetupStatus {
   requires_openai_auth: boolean;
   current_model_provider: string | null;
   current_model: string | null;
+  model_catalog_json: string | null;
+  catalog_matches: boolean;
   yeapi_provider_present: boolean;
   provider_token_hint: string | null;
   applied_api_key_id: string | null;
@@ -478,4 +480,5 @@ export interface SetupModelOption {
 export interface ClientSetupPreview {
   config_path: string;
   snippet: string;
+  warning: string | null;
 }

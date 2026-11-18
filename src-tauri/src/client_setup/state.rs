@@ -21,6 +21,8 @@ pub struct PreviousValues {
     pub model: Option<String>,
     #[serde(default)]
     pub disable_response_storage: Option<bool>,
+    #[serde(default)]
+    pub model_catalog_json: Option<String>,
     /// 首次接入前已存在 `[model_providers.yeapi]` 时，原表的完整 TOML 片段。
     #[serde(default)]
     pub provider_toml: Option<String>,

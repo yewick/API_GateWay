@@ -267,7 +267,7 @@ const emptyFallback = (cmd: string): Promise<any> => {
     return Promise.resolve([]);
   }
   if (cmd === "client_setup_preview") {
-    return Promise.resolve({ config_path: "", snippet: "" });
+    return Promise.resolve({ config_path: "", snippet: "", warning: null });
   }
   if (cmd === "client_setup_test") {
     return Promise.resolve({

@@ -15,6 +15,7 @@ dist-ssr
 # AI / agent tooling (local-only, not shared via git)
 .agents/
 .claude/skills/
+CLAUDE.md
 
 # Editor directories and files
 .vscode/

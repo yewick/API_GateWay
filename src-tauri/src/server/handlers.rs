@@ -548,6 +548,10 @@ trait StreamConverter {
     fn new(model: &str) -> Self;
     fn push(&mut self, bytes: &[u8]) -> Vec<String>;
     fn finish(&mut self) -> Vec<String>;
+    /// 上游流中断时的收尾事件；默认等价于正常结束（Anthropic 等协议无需改动）。
+    fn finish_error(&mut self, _message: &str) -> Vec<String> {
+        self.finish()
+    }
 }
 
 impl StreamConverter for AnthropicStreamConverter {
@@ -571,6 +575,9 @@ impl StreamConverter for ResponsesStreamConverter {
     }
     fn finish(&mut self) -> Vec<String> {
         ResponsesStreamConverter::finish(self)
+    }
+    fn finish_error(&mut self, message: &str) -> Vec<String> {
+        ResponsesStreamConverter::finish_error(self, message)
     }
 }
 
@@ -691,33 +698,52 @@ async fn proxy_stream<C: StreamConverter + Send>(
                 let converted_stream = async_stream::stream! {
                     tokio::pin!(upstream_stream);
 
+                    // 先给客户端一个 SSE 注释，之后每 10 秒一次。上游首包较慢时，
+                    // 客户端不会因为长时间收不到字节而把连接判为断流。
+                    yield Ok::<_, std::io::Error>(Bytes::from(": keep-alive\n\n"));
+                    let mut keepalive =
+                        tokio::time::interval(std::time::Duration::from_secs(10));
+                    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    keepalive.tick().await;
+
                     let mut converter = C::new(&model_c);
                     let mut usage_prompt: i64 = 0;
                     let mut usage_completion: i64 = 0;
                     let mut usage_total: i64 = 0;
                     let mut had_error = false;
+                    let mut stream_error: Option<String> = None;
 
-                    while let Some(chunk_result) = upstream_stream.next().await {
-                        match chunk_result {
-                            Ok(bytes) => {
-                                // 旁路解析 usage（不影响转换）
-                                if let Ok(text) = std::str::from_utf8(&bytes) {
-                                    if let Some((p, c, t)) = protocol::parse_usage_from_sse_chunk(text) {
-                                        usage_prompt = p;
-                                        usage_completion = c;
-                                        usage_total = t;
-                                    }
-                                }
-                                for ev in converter.push(&bytes) {
-                                    yield Ok::<_, std::io::Error>(Bytes::from(ev));
-                                }
+                    loop {
+                        tokio::select! {
+                            _ = keepalive.tick() => {
+                                yield Ok::<_, std::io::Error>(Bytes::from(": keep-alive\n\n"));
                             }
-                            Err(_e) => {
-                                had_error = true;
-                                for ev in converter.finish() {
-                                    yield Ok::<_, std::io::Error>(Bytes::from(ev));
+                            chunk_result = upstream_stream.next() => {
+                                match chunk_result {
+                                    Some(Ok(bytes)) => {
+                                        // 旁路解析 usage（不影响转换）
+                                        if let Ok(text) = std::str::from_utf8(&bytes) {
+                                            if let Some((p, c, t)) = protocol::parse_usage_from_sse_chunk(text) {
+                                                usage_prompt = p;
+                                                usage_completion = c;
+                                                usage_total = t;
+                                            }
+                                        }
+                                        for ev in converter.push(&bytes) {
+                                            yield Ok::<_, std::io::Error>(Bytes::from(ev));
+                                        }
+                                    }
+                                    Some(Err(e)) => {
+                                        had_error = true;
+                                        let msg = format!("Upstream stream interrupted: {e}");
+                                        for ev in converter.finish_error(&msg) {
+                                            yield Ok::<_, std::io::Error>(Bytes::from(ev));
+                                        }
+                                        stream_error = Some(msg);
+                                        break;
+                                    }
+                                    None => break,
                                 }
-                                break;
                             }
                         }
                     }
@@ -743,11 +769,7 @@ async fn proxy_stream<C: StreamConverter + Send>(
                         completion_tokens: usage_completion,
                         total_tokens: usage_total,
                         duration_ms: start.elapsed().as_millis() as i64,
-                        error_message: if had_error {
-                            Some("Stream connection interrupted".to_string())
-                        } else {
-                            None
-                        },
+                        error_message: stream_error.clone(),
                         is_stream: 1,
                         is_retry,
                         created_at: utils::time::now_iso(),
@@ -781,6 +803,7 @@ async fn proxy_stream<C: StreamConverter + Send>(
                     .header(header::CONTENT_TYPE, "text/event-stream")
                     .header(header::CACHE_CONTROL, "no-cache")
                     .header(header::CONNECTION, "keep-alive")
+                    .header("x-accel-buffering", "no")
                     .body(Body::from_stream(converted_stream))
                     .unwrap();
             }

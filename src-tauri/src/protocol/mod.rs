@@ -3,6 +3,7 @@ pub mod responses;
 
 use axum::http::HeaderMap;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 /// Extract API key from either `Authorization: Bearer xxx` or `x-api-key: xxx` header.
 pub fn extract_api_key(headers: &HeaderMap) -> Option<String> {
@@ -447,20 +448,39 @@ pub fn responses_to_openai(body: &Value) -> Value {
 
 fn convert_responses_input_to_messages(input: &Value) -> Value {
     let mut msgs: Vec<Value> = Vec::new();
+
+    // Responses API 允许 `input` 直接是字符串。
+    if let Some(text) = input.as_str() {
+        msgs.push(json!({ "role": "user", "content": text }));
+        return Value::Array(msgs);
+    }
+
     let arr = match input.as_array() {
         Some(a) => a,
         None => return Value::Array(msgs),
     };
 
+    // 当前打开的 assistant 工具调用消息在 msgs 中的下标，以及它声明过的 call_id。
+    // 连续的 function_call 必须合并进同一条 assistant 消息；只有能对上当前
+    // assistant 声明的 call_id 的 function_call_output 才写成 tool 消息。
+    let mut tool_msg_index: Option<usize> = None;
+    let mut current_tool_call_ids: HashSet<String> = HashSet::new();
+
     for item in arr {
         let ty = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+        // 兼容省略 `type` 的消息项（Responses API 允许 `{role, content}`）。
+        if ty == "message" || (ty.is_empty() && item.get("role").is_some()) {
+            tool_msg_index = None;
+            current_tool_call_ids.clear();
+            let role = item.get("role").and_then(|r| r.as_str()).unwrap_or("user").to_string();
+            let content = item.get("content").cloned().unwrap_or(Value::String(String::new()));
+            let text = extract_responses_text(&content);
+            msgs.push(json!({ "role": role, "content": text }));
+            continue;
+        }
+
         match ty {
-            "message" => {
-                let role = item.get("role").and_then(|r| r.as_str()).unwrap_or("user").to_string();
-                let content = item.get("content").cloned().unwrap_or(Value::String(String::new()));
-                let text = extract_responses_text(&content);
-                msgs.push(json!({ "role": role, "content": text }));
-            }
             "function_call" => {
                 let call_id = item.get("call_id").and_then(|c| c.as_str()).unwrap_or("").to_string();
                 let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
@@ -470,25 +490,54 @@ fn convert_responses_input_to_messages(input: &Value) -> Value {
                 } else {
                     serde_json::to_string(&arguments).unwrap_or_else(|_| "{}".to_string())
                 };
-                msgs.push(json!({
-                    "role": "assistant",
-                    "content": Value::Null,
-                    "tool_calls": [{
+
+                let index = match tool_msg_index {
+                    Some(index) => index,
+                    None => {
+                        let index = msgs.len();
+                        msgs.push(json!({
+                            "role": "assistant",
+                            "content": Value::Null,
+                            "tool_calls": []
+                        }));
+                        tool_msg_index = Some(index);
+                        index
+                    }
+                };
+                if let Some(calls) = msgs[index]["tool_calls"].as_array_mut() {
+                    calls.push(json!({
                         "id": call_id,
                         "type": "function",
                         "function": { "name": name, "arguments": args_str }
-                    }]
-                }));
+                    }));
+                }
+                if !call_id.is_empty() {
+                    current_tool_call_ids.insert(call_id);
+                }
             }
             "function_call_output" => {
                 let call_id = item.get("call_id").and_then(|c| c.as_str()).unwrap_or("").to_string();
                 let output = item.get("output").cloned().unwrap_or(Value::String(String::new()));
                 let text = extract_responses_text(&output);
-                msgs.push(json!({
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    "content": text
-                }));
+
+                if !call_id.is_empty() && current_tool_call_ids.contains(&call_id) {
+                    msgs.push(json!({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": text
+                    }));
+                } else if !text.trim().is_empty() {
+                    // 没有对应 call_id 的输出（例如 Codex app 工具的输出）不能写成
+                    // 孤立的 tool 消息，否则上游会报
+                    // "role 'tool' must be a response to a preceding tool_calls"。
+                    let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+                    msgs.push(json!({
+                        "role": "user",
+                        "content": format!("[tool output: {name}]\n{text}")
+                    }));
+                    tool_msg_index = None;
+                    current_tool_call_ids.clear();
+                }
             }
             _ => {}
         }
@@ -693,6 +742,100 @@ mod tests {
         assert_eq!(msgs[1]["role"], "user");
         assert_eq!(msgs[1]["content"], "hi");
         assert_eq!(out["max_tokens"], 50);
+    }
+
+    #[test]
+    fn test_responses_to_openai_string_input() {
+        let body = json!({"model": "m", "input": "hello"});
+        let out = responses_to_openai(&body);
+        let msgs = out["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[0]["content"], "hello");
+    }
+
+    #[test]
+    fn test_responses_to_openai_untyped_message() {
+        let body = json!({"model": "m", "input": [{"role": "user", "content": "hi"}]});
+        let out = responses_to_openai(&body);
+        let msgs = out["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[0]["content"], "hi");
+    }
+
+    #[test]
+    fn test_responses_to_openai_groups_parallel_tool_calls() {
+        let body = json!({
+            "model": "m",
+            "input": [
+                {"type": "function_call", "call_id": "a", "name": "exec", "arguments": "{}"},
+                {"type": "function_call", "call_id": "b", "name": "exec", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "a", "output": "1"},
+                {"type": "function_call_output", "call_id": "b", "output": "2"}
+            ]
+        });
+        let out = responses_to_openai(&body);
+        let msgs = out["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0]["role"], "assistant");
+        assert_eq!(msgs[0]["tool_calls"].as_array().unwrap().len(), 2);
+        assert_eq!(msgs[1]["role"], "tool");
+        assert_eq!(msgs[1]["tool_call_id"], "a");
+        assert_eq!(msgs[2]["role"], "tool");
+        assert_eq!(msgs[2]["tool_call_id"], "b");
+    }
+
+    #[test]
+    fn test_responses_to_openai_sequential_tool_calls() {
+        let body = json!({
+            "model": "m",
+            "input": [
+                {"type": "function_call", "call_id": "a", "name": "exec", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "a", "output": "1"},
+                {"type": "function_call", "call_id": "b", "name": "exec", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "b", "output": "2"}
+            ]
+        });
+        let out = responses_to_openai(&body);
+        let msgs = out["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0]["role"], "assistant");
+        assert_eq!(msgs[0]["tool_calls"].as_array().unwrap().len(), 2);
+        assert_eq!(msgs[1]["role"], "tool");
+        assert_eq!(msgs[1]["tool_call_id"], "a");
+        assert_eq!(msgs[2]["role"], "tool");
+        assert_eq!(msgs[2]["tool_call_id"], "b");
+    }
+
+    #[test]
+    fn test_responses_to_openai_orphan_tool_output() {
+        let body = json!({
+            "model": "m",
+            "input": [
+                {"type": "function_call", "call_id": "a", "name": "exec", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "a", "output": "ok"},
+                {"type": "function_call_output", "output": "page", "name": "codex_apps_open_page"},
+                {"type": "function_call_output", "call_id": "missing", "output": "page2", "name": "unknown"}
+            ]
+        });
+        let out = responses_to_openai(&body);
+        let msgs = out["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 4);
+        assert_eq!(msgs[1]["role"], "tool");
+        assert_eq!(msgs[1]["tool_call_id"], "a");
+        assert_eq!(msgs[2]["role"], "user");
+        assert!(msgs[2]["content"]
+            .as_str()
+            .unwrap()
+            .contains("codex_apps_open_page"));
+        assert_eq!(msgs[3]["role"], "user");
+        assert!(msgs[3]["content"].as_str().unwrap().contains("page2"));
+        for msg in msgs {
+            if msg["role"] == "tool" {
+                assert!(!msg["tool_call_id"].as_str().unwrap_or("").is_empty());
+            }
+        }
     }
 
     #[test]

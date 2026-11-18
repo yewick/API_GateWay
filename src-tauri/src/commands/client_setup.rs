@@ -18,6 +18,32 @@ fn require_codex(client: &str) -> Result<(), String> {
     }
 }
 
+/// 检查模型能否命中至少一个启用渠道；不能时返回可直接展示给用户的提示。
+async fn model_availability(repo: &Repository, model: &str) -> Result<Option<String>, String> {
+    let channels = repo
+        .get_enabled_channels()
+        .await
+        .map_err(|err| err.to_string())?;
+    if !crate::core::dispatcher::Dispatcher::select_channels(&channels, model).is_empty() {
+        return Ok(None);
+    }
+
+    let mut names: Vec<String> = crate::server::handlers::collect_models(&channels)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    names.sort();
+    names.dedup();
+    let hint = if names.is_empty() {
+        "当前没有启用渠道，请先在「渠道」页添加并启用渠道".to_string()
+    } else {
+        format!("当前可用模型：{}", names.join("、"))
+    };
+    Ok(Some(format!(
+        "模型 `{model}` 没有匹配的启用渠道。{hint}。请到「渠道」页启用包含该模型的渠道，或换一个模型。"
+    )))
+}
+
 #[tauri::command]
 pub async fn client_setup_status(
     app: tauri::AppHandle,
@@ -76,12 +102,15 @@ pub async fn client_setup_preview(
     }
 
     let paths = paths::resolve_codex_paths()?;
-    let existing = setup_state::read_optional(&paths.config)?.unwrap_or_default();
     let gateway = client_setup::gateway_base_url(&app, state.inner()).await;
     let requires_openai_auth = codex::auth_logged_in(&paths.auth);
 
+    let repo = Repository::new(state.db.pool.clone());
+    let warning = model_availability(&repo, model).await?;
+
+    // 只生成 YeAPI 会写入/覆盖的键；实际写入时才会合并进原文件。
     let snippet = codex::merge_config(
-        &existing,
+        "",
         &codex::ProviderSpec {
             base_url: &gateway,
             model,
@@ -93,6 +122,7 @@ pub async fn client_setup_preview(
     Ok(PreviewResult {
         config_path: paths.config.to_string_lossy().to_string(),
         snippet,
+        warning,
     })
 }
 
@@ -133,6 +163,9 @@ pub async fn client_setup_apply(
     let requires_openai_auth = codex::auth_logged_in(&paths.auth);
 
     let repo = Repository::new(state.db.pool.clone());
+    if let Some(warning) = model_availability(&repo, &model).await? {
+        return Err(warning);
+    }
     let created_new_key = matches!(&input.key, ApiKeySelection::New { .. });
     let (key_id, api_key) = match &input.key {
         ApiKeySelection::Existing { id } => {
@@ -174,6 +207,35 @@ pub async fn client_setup_apply(
         }
     };
     let key_fingerprint = setup_state::fingerprint(&api_key);
+
+    // 生成 Codex 模型目录，让模型菜单只出现当前启用渠道真正支持的模型。
+    let channels = repo
+        .get_enabled_channels()
+        .await
+        .map_err(|err| err.to_string())?;
+    let mut catalog_models: Vec<String> = crate::server::handlers::collect_models(&channels)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    catalog_models.sort();
+    catalog_models.dedup();
+    if !catalog_models
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(&model))
+    {
+        catalog_models.push(model.clone());
+    }
+    let catalog_path = paths.home.join(codex::CATALOG_FILENAME);
+    if let Err(err) = setup_state::atomic_write(
+        &catalog_path,
+        codex::build_model_catalog(&catalog_models).as_bytes(),
+        0o644,
+    ) {
+        if created_new_key {
+            let _ = repo.delete_api_key(&key_id).await;
+        }
+        return Err(format!("生成模型目录失败: {err}"));
+    }
 
     let mut backup_path = existing_record
         .as_ref()
@@ -319,6 +381,9 @@ pub async fn client_setup_test(
         .ok_or_else(|| "请先完成 Codex 接入".to_string())?;
 
     let repo = Repository::new(state.db.pool.clone());
+    if let Some(warning) = model_availability(&repo, &record.model).await? {
+        return Err(warning);
+    }
     let key = repo
         .get_api_key_by_id(&record.api_key_id)
         .await
@@ -335,7 +400,7 @@ pub async fn client_setup_test(
     let body = serde_json::json!({
         "model": record.model,
         "input": "回复 OK 两个字母即可",
-        "max_output_tokens": 16,
+        "max_output_tokens": 32,
         "stream": false,
     });
 
@@ -355,7 +420,12 @@ pub async fn client_setup_test(
     let status = response.status().as_u16();
     let text = response.text().await.unwrap_or_default();
     let latency_ms = started.elapsed().as_millis() as u64;
-    let message = if status < 400 {
+    let message = if status == 503 && text.contains("No channel available") {
+        format!(
+            "模型 `{}` 当前没有可用渠道。请到「渠道」页启用包含该模型的渠道，或重新接入时选择其他模型。",
+            record.model
+        )
+    } else if status < 400 {
         extract_response_text(&text).unwrap_or_else(|| "网关已响应".to_string())
     } else {
         format!("网关返回 {status}: {}", truncate(&text, 300))

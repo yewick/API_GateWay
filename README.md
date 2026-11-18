@@ -290,7 +290,9 @@ curl http://127.0.0.1:8777/v1/models \
 
 - 应用会在 `~/.codex/config.toml` 中增量写入 `[model_providers.yeapi]`：地址指向本机网关、`wire_api = "responses"`、Key 写入 `experimental_bearer_token`；其余配置、注释和其他 provider 保持不变。
 - 首次写入前会备份原文件，接入记录保存在应用数据目录；页面上可直接预览将写入的片段、测试连接或打开配置目录。
-- **不会修改** `~/.codex/auth.json`。检测到本机有 ChatGPT 登录时，会自动把 `requires_openai_auth` 写为 `true`（Codex 的登录页开关），否则写为 `false`。
+- 同时生成 `yeapi-model-catalog.json` 并把 `model_catalog_json` 指向它，让 Codex 的模型菜单只出现当前启用渠道真正支持的模型；若所选模型没有任何启用渠道，接入前会直接给出提示。
+- **不会修改** `~/.codex/auth.json`。检测到本机有 ChatGPT 登录时，会自动把 `requires_openai_auth` 写为 `true`（Codex 的登录页开关），否则写为 `false`。注意：`true` 必须有可用的 `auth.json` 配合，否则 Codex 会停在登录页；如果由 ccswitch 管理 Codex，请在 ccswitch 中开启「保留 Codex 官方登录」，并让它写入的 provider 与本机登录状态一致。
+- 使用 DeepSeek thinking 模型时，网关会在工具调用轮次自动关闭 thinking（DeepSeek 要求回传 `reasoning_content`，而 Codex 不回传）；纯对话轮次不受影响。
 - 接入完成后必须**完全退出 Codex 再打开**：桌面 App 使用 Cmd+Q 退出进程（关闭窗口不算），CLI 请结束正在运行的 `codex` 进程并重开终端。
 
 「断开接入」会删除 `yeapi` provider 并恢复接入前的 `model_provider` / `model`；如果期间你手动改过这些值，断开时会保留你的修改并给出提示。

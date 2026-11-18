@@ -53,7 +53,10 @@ impl Adaptor for DeepSeekAdaptor {
         config: &ChannelConfig,
     ) -> Result<(u16, serde_json::Value, Option<TokenUsage>), anyhow::Error> {
         let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-        let body = super::openai::apply_model_mapping(&request.body, &config.model_mapping);
+        let body = apply_reasoning_compat(super::openai::apply_model_mapping(
+            &request.body,
+            &config.model_mapping,
+        ));
         let client = http_client(Some(120))?;
         let resp = client.post(&url)
             .header("Authorization", format!("Bearer {}", config.api_key))
@@ -77,7 +80,10 @@ impl Adaptor for DeepSeekAdaptor {
         config: &ChannelConfig,
     ) -> Result<reqwest::Response, anyhow::Error> {
         let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-        let mut body = super::openai::apply_model_mapping(&request.body, &config.model_mapping);
+        let mut body = apply_reasoning_compat(super::openai::apply_model_mapping(
+            &request.body,
+            &config.model_mapping,
+        ));
         body["stream"] = serde_json::Value::Bool(true);
         let client = http_client(None)?;
         let resp = client.post(&url)
@@ -87,5 +93,66 @@ impl Adaptor for DeepSeekAdaptor {
             .send()
             .await?;
         Ok(resp)
+    }
+}
+
+/// DeepSeek thinking 模式兼容：
+/// 历史中只要出现带 `tool_calls` 的 assistant 消息，就对本请求关闭 thinking。
+///
+/// 原因：thinking 模式要求把产生工具调用时的 `reasoning_content` 原样回传，但
+/// Responses 客户端（Codex）不会回传 reasoning item；实测即便网关回填也无法通过
+/// 上游校验。关闭 thinking 可以让工具循环稳定工作。
+fn apply_reasoning_compat(mut body: serde_json::Value) -> serde_json::Value {
+    let has_tool_calls = body
+        .get("messages")
+        .and_then(|messages| messages.as_array())
+        .is_some_and(|messages| {
+            messages.iter().any(|message| {
+                message.get("role").and_then(|role| role.as_str()) == Some("assistant")
+                    && message
+                        .get("tool_calls")
+                        .and_then(|tool_calls| tool_calls.as_array())
+                        .is_some_and(|tool_calls| !tool_calls.is_empty())
+            })
+        });
+
+    if has_tool_calls {
+        body["thinking"] = serde_json::json!({ "type": "disabled" });
+        if let Some(object) = body.as_object_mut() {
+            object.remove("reasoning_effort");
+        }
+    }
+
+    body
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn disables_thinking_for_tool_history() {
+        let call_id = format!("tool-{}", uuid::Uuid::new_v4().simple());
+        let body = json!({
+            "messages": [
+                {"role": "assistant", "content": null, "tool_calls": [
+                    {"id": call_id, "type": "function", "function": {"name": "f", "arguments": "{}"}}
+                ]},
+                {"role": "tool", "tool_call_id": call_id, "content": "x"}
+            ],
+            "reasoning_effort": "high"
+        });
+        let out = apply_reasoning_compat(body);
+        assert_eq!(out["thinking"]["type"], "disabled");
+        assert!(out.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn leaves_plain_chat_unchanged() {
+        let body = json!({"messages": [{"role": "user", "content": "hi"}], "reasoning_effort": "high"});
+        let out = apply_reasoning_compat(body);
+        assert!(out.get("thinking").is_none());
+        assert_eq!(out["reasoning_effort"], "high");
     }
 }

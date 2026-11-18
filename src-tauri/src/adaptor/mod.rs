@@ -76,6 +76,11 @@ pub trait Adaptor: Send + Sync {
 pub fn http_client(total_timeout_secs: Option<u64>) -> Result<reqwest::Client, reqwest::Error> {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10));
+    if total_timeout_secs.is_none() {
+        // 流式请求不复用空闲连接：上游可能已关闭旧连接，复用时会卡在首包前，
+        // 客户端只能等到自己的流超时。
+        builder = builder.pool_max_idle_per_host(0);
+    }
     if let Some(secs) = total_timeout_secs {
         builder = builder.timeout(std::time::Duration::from_secs(secs));
     }

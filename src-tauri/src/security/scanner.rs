@@ -77,12 +77,8 @@ fn scan_text(
     custom_rules: Option<&[crate::security::CustomRule]>,
     findings: &mut Vec<SecurityFinding>,
 ) {
-    // 截断保护：超长字段只扫前 N 字节
-    let s = if text.len() > settings.max_scan_bytes {
-        &text[..settings.max_scan_bytes]
-    } else {
-        text
-    };
+    // 截断保护：超长字段只扫前 N 字节（切点必须落在字符边界上）
+    let s = truncate_on_char_boundary(text, settings.max_scan_bytes);
 
     // 先写入局部集合，便于白名单按 finding 粒度豁免
     let mut local: Vec<SecurityFinding> = Vec::new();
@@ -796,12 +792,30 @@ fn mask_evidence(e: &str) -> String {
 
 // ---------- 工具函数 ----------
 
+/// 按字节上限截取文本，切点始终落在 UTF-8 字符边界上。
+/// 直接 `&text[..n]` 在中文等多字节字符内部切片会 panic。
+fn truncate_on_char_boundary(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut end = 0;
+    for (idx, ch) in text.char_indices() {
+        let next = idx + ch.len_utf8();
+        if next > max_bytes {
+            break;
+        }
+        end = next;
+    }
+    &text[..end]
+}
+
 /// 截取文本片段（用于 evidence）
 fn snippet(text: &str) -> String {
-    if text.len() <= 64 {
+    let head = truncate_on_char_boundary(text, 64);
+    if head.len() == text.len() {
         text.to_string()
     } else {
-        format!("{}...", &text[..64])
+        format!("{}...", head)
     }
 }
 
@@ -831,4 +845,32 @@ pub fn add_finding(
         location: location.to_string(),
         evidence_masked: evidence_masked.to_string(),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snippet_keeps_multibyte_chars_intact() {
+        // 复现线上 panic：'卷' 位于 bytes 63..66，旧实现 &text[..64] 会崩
+        let mut text = "a".repeat(63);
+        text.push('卷');
+        text.push_str("后续内容");
+        assert_eq!(snippet(&text), format!("{}...", "a".repeat(63)));
+    }
+
+    #[test]
+    fn snippet_returns_short_text_as_is() {
+        assert_eq!(snippet("你好，世界"), "你好，世界");
+    }
+
+    #[test]
+    fn truncate_on_char_boundary_never_splits_chars() {
+        let text = "卷".repeat(40); // 120 字节
+        let out = truncate_on_char_boundary(&text, 64);
+        assert_eq!(out.len(), 63); // 21 个汉字；第 22 个会越界到 66
+        assert_eq!(out, "卷".repeat(21));
+        assert!(text.is_char_boundary(out.len()));
+    }
 }

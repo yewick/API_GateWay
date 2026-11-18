@@ -8,7 +8,16 @@
 
 ### Added
 
-- **客户端接入向导（Codex）**：新增「客户端接入」页面，可新建 / 选择 YeAPI 密钥并一键写入 `~/.codex/config.toml`（专用 `yeapi` provider、`responses` 协议、`experimental_bearer_token`），无需登录 OpenAI 账号。支持配置预览、连接测试、断开恢复与首次写入前备份；不修改 `auth.json`，并按本机 ChatGPT 登录态自动设置 `requires_openai_auth`。
+- **客户端接入向导（Codex）**：新增「客户端接入」页面，可新建 / 选择 YeAPI 密钥并一键写入 `~/.codex/config.toml`（专用 `yeapi` provider、`responses` 协议、`experimental_bearer_token`），无需登录 OpenAI 账号。支持配置预览、连接测试、断开恢复与首次写入前备份；不修改 `auth.json`，并按本机 ChatGPT 登录态自动设置 `requires_openai_auth`。接入前校验模型是否命中启用渠道，并生成 `yeapi-model-catalog.json` 供 Codex 模型菜单使用。
+
+### Fixed
+
+- 修复 `/v1/responses` 流式事件不符合 Responses 规范导致 Codex 丢弃文本 / 工具调用的问题：补齐 `response.output_item.added/done`、`response.content_part.added/done`、`response.output_text.done`、`response.function_call_arguments.done`，并在 `response.completed` 中回填完整文本与工具调用参数。
+- 修复 Responses 请求的 `input` 为字符串、或消息项省略 `type` 时被丢弃、上游报 `Empty input messages` 的问题。
+- 修复连续 / 并行 `function_call` 被拆成多条 assistant 消息、导致上游报 `tool_calls must be followed by tool messages` 的问题：连续的 `function_call` 现在合并进同一条 assistant 消息。
+- 修复 DeepSeek thinking 模型在工具调用轮次报 `reasoning_content must be passed back` 的问题：历史中存在 `tool_calls` 时，DeepSeek 适配器会对本次请求关闭 thinking；纯对话轮次不受影响。
+- 修复无 `call_id` 或对不上当前 `tool_calls` 的 `function_call_output`（例如 Codex app 工具输出）被写成孤立 `tool` 消息、上游报 `role 'tool' must be a response to a preceding message with 'tool_calls'` 的问题：无法关联的输出改为带标签的 user 文本。
+- 修复流式响应在等待上游首包期间不发送任何字节、导致客户端约 30 秒流超时（`stream disconnected before completion: error sending request`）的问题：新增立即发送和每 10 秒一次的 SSE keep-alive，并让流式上游请求不复用空闲连接。
 
 ## [0.1.6] - 2026-09-01
 

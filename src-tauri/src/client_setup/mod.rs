@@ -62,6 +62,8 @@ pub struct ClientSetupStatus {
     pub requires_openai_auth: bool,
     pub current_model_provider: Option<String>,
     pub current_model: Option<String>,
+    pub model_catalog_json: Option<String>,
+    pub catalog_matches: bool,
     pub yeapi_provider_present: bool,
     pub provider_token_hint: Option<String>,
     pub applied_api_key_id: Option<String>,
@@ -129,6 +131,8 @@ pub struct ModelOption {
 pub struct PreviewResult {
     pub config_path: String,
     pub snippet: String,
+    /// 模型在当前启用渠道里不可用时的提示（预览仍会生成）。
+    pub warning: Option<String>,
 }
 
 pub(crate) fn app_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
