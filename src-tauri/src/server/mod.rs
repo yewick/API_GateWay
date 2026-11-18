@@ -35,7 +35,7 @@ pub async fn start_server(app: AppHandle, state: std::sync::Arc<AppState>) -> Re
     Ok(())
 }
 
-fn get_server_host(app: &AppHandle) -> String {
+pub(crate) fn get_server_host(app: &AppHandle) -> String {
     app.store("settings.json").ok()
         .and_then(|store| store.get("server.host"))
         .and_then(|v| v.as_str().map(|s| s.trim().to_string()))
@@ -43,7 +43,7 @@ fn get_server_host(app: &AppHandle) -> String {
         .unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
-fn get_server_port(app: &AppHandle) -> u16 {
+pub(crate) fn get_server_port(app: &AppHandle) -> u16 {
     app.store("settings.json").ok()
         .and_then(|store| store.get("server.port"))
         .and_then(|v| v.as_u64())

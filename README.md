@@ -284,6 +284,17 @@ curl http://127.0.0.1:8777/v1/models \
 
 每次请求都会在「日志」页留痕，可看到命中渠道、token 用量、耗时、风险等级与安全发现；「用量」页提供按日统计与多协议分布；「仪表盘」汇总今日请求量 / token / 活跃渠道 / 平均延迟。
 
+### 7. 一键接入 Codex
+
+进入「客户端接入」页，选择「新建专用 Key」或一个已有密钥，选好默认模型后点「接入 Codex」：
+
+- 应用会在 `~/.codex/config.toml` 中增量写入 `[model_providers.yeapi]`：地址指向本机网关、`wire_api = "responses"`、Key 写入 `experimental_bearer_token`；其余配置、注释和其他 provider 保持不变。
+- 首次写入前会备份原文件，接入记录保存在应用数据目录；页面上可直接预览将写入的片段、测试连接或打开配置目录。
+- **不会修改** `~/.codex/auth.json`。检测到本机有 ChatGPT 登录时，会自动把 `requires_openai_auth` 写为 `true`（Codex 的登录页开关），否则写为 `false`。
+- 接入完成后必须**完全退出 Codex 再打开**：桌面 App 使用 Cmd+Q 退出进程（关闭窗口不算），CLI 请结束正在运行的 `codex` 进程并重开终端。
+
+「断开接入」会删除 `yeapi` provider 并恢复接入前的 `model_provider` / `model`；如果期间你手动改过这些值，断开时会保留你的修改并给出提示。
+
 ---
 
 ## HTTP API 参考

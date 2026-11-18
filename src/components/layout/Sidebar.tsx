@@ -8,6 +8,7 @@ import {
   Settings,
   BookOpen,
   Plug,
+  Cable,
   Zap,
   PanelLeftClose,
   PanelLeftOpen,
@@ -29,6 +30,7 @@ const iconMap: Record<
   Settings,
   BookOpen,
   Plug,
+  Cable,
 };
 
 export function Sidebar() {

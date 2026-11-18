@@ -4,6 +4,12 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Added
+
+- **客户端接入向导（Codex）**：新增「客户端接入」页面，可新建 / 选择 YeAPI 密钥并一键写入 `~/.codex/config.toml`（专用 `yeapi` provider、`responses` 协议、`experimental_bearer_token`），无需登录 OpenAI 账号。支持配置预览、连接测试、断开恢复与首次写入前备份；不修改 `auth.json`，并按本机 ChatGPT 登录态自动设置 `requires_openai_auth`。
+
 ## [0.1.6] - 2026-09-01
 
 ### Added

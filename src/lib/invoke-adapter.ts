@@ -28,6 +28,14 @@ export const REAL_COMMANDS = new Set<string>([
   "create_api_key",
   "update_api_key",
   "delete_api_key",
+  // 客户端接入
+  "client_setup_status",
+  "client_setup_list_models",
+  "client_setup_preview",
+  "client_setup_apply",
+  "client_setup_disconnect",
+  "client_setup_test",
+  "client_setup_open_dir",
   // 日志
   "get_logs",
   "get_log",
@@ -250,6 +258,24 @@ const emptyFallback = (cmd: string): Promise<any> => {
   // 服务状态 → 空数组
   if (cmd === "get_service_statuses") {
     return Promise.resolve([]);
+  }
+  // 客户端接入 → 后端不可用时的空结果
+  if (cmd === "client_setup_status") {
+    return Promise.resolve(null);
+  }
+  if (cmd === "client_setup_list_models") {
+    return Promise.resolve([]);
+  }
+  if (cmd === "client_setup_preview") {
+    return Promise.resolve({ config_path: "", snippet: "" });
+  }
+  if (cmd === "client_setup_test") {
+    return Promise.resolve({
+      ok: false,
+      status: 0,
+      latency_ms: 0,
+      message: "Backend not available",
+    });
   }
   // 写入/删除等 → void
   return Promise.resolve(undefined);

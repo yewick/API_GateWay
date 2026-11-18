@@ -25,6 +25,31 @@ use crate::utils;
 
 // ---------- 统一错误响应（OpenAI 兼容格式） ----------
 
+/// 启用渠道可接受的模型并集：渠道 `models` ∪ `model_mapping` 的 key（对外别名）。
+/// 去重，保留首次出现的渠道类型作为 `owned_by`。
+pub fn collect_models(channels: &[crate::db::models::Channel]) -> Vec<(String, String)> {
+    let mut seen = HashSet::new();
+    let mut models = Vec::new();
+    for channel in channels {
+        let declared: Vec<String> = serde_json::from_str(&channel.models).unwrap_or_default();
+        for model in declared {
+            if seen.insert(model.clone()) {
+                models.push((model, channel.channel_type.clone()));
+            }
+        }
+        let mapping: serde_json::Value =
+            serde_json::from_str(&channel.model_mapping).unwrap_or_default();
+        if let Some(object) = mapping.as_object() {
+            for alias in object.keys() {
+                if seen.insert(alias.clone()) {
+                    models.push((alias.clone(), channel.channel_type.clone()));
+                }
+            }
+        }
+    }
+    models
+}
+
 fn error_response(code: u16, msg: &str) -> Response {
     let body = serde_json::json!({
         "error": { "message": msg, "type": "upstream_error", "code": code }
@@ -880,35 +905,18 @@ pub async fn handle_list_models(State(shared): State<SharedState>) -> Response {
     let repo = Repository::new(shared.state.db.pool.clone());
     match repo.get_enabled_channels().await {
         Ok(channels) => {
-            let mut models: Vec<serde_json::Value> = Vec::new();
-            let mut seen = std::collections::HashSet::new();
-            for ch in &channels {
-                // 渠道声明的模型
-                let ch_models: Vec<String> = serde_json::from_str(&ch.models).unwrap_or_default();
-                for m in ch_models {
-                    if seen.insert(m.clone()) {
-                        models.push(serde_json::json!({
-                            "id": m, "object": "model",
-                            "created": chrono::Utc::now().timestamp(),
-                            "owned_by": ch.channel_type,
-                        }));
-                    }
-                }
-                // 映射名也暴露（下游看到的名义模型）
-                let mapping: serde_json::Value = serde_json::from_str(&ch.model_mapping)
-                    .unwrap_or(serde_json::Value::Object(Default::default()));
-                if let Some(obj) = mapping.as_object() {
-                    for key in obj.keys() {
-                        if seen.insert(key.clone()) {
-                            models.push(serde_json::json!({
-                                "id": key, "object": "model",
-                                "created": chrono::Utc::now().timestamp(),
-                                "owned_by": ch.channel_type,
-                            }));
-                        }
-                    }
-                }
-            }
+            let created = chrono::Utc::now().timestamp();
+            let models: Vec<serde_json::Value> = collect_models(&channels)
+                .into_iter()
+                .map(|(id, owned_by)| {
+                    serde_json::json!({
+                        "id": id,
+                        "object": "model",
+                        "created": created,
+                        "owned_by": owned_by,
+                    })
+                })
+                .collect();
             Json(serde_json::json!({ "object": "list", "data": models })).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),

@@ -100,6 +100,7 @@ export const NAV_ITEMS: NavItem[] = [
   { path: "/logs", label: "日志", icon: "ScrollText" },
   { path: "/knowledge", label: "知识库", icon: "BookOpen" },
   { path: "/mcp", label: "MCP 服务", icon: "Plug" },
+  { path: "/client-access", label: "客户端接入", icon: "Cable" },
   { path: "/settings", label: "设置", icon: "Settings" },
 ];
 

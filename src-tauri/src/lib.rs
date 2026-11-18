@@ -1,4 +1,5 @@
 mod adaptor;
+mod client_setup;
 mod commands;
 mod core;
 mod db;
@@ -55,6 +56,14 @@ pub fn run() {
             commands::api_key::create_api_key,
             commands::api_key::update_api_key,
             commands::api_key::delete_api_key,
+            // 客户端接入
+            commands::client_setup::client_setup_status,
+            commands::client_setup::client_setup_list_models,
+            commands::client_setup::client_setup_preview,
+            commands::client_setup::client_setup_apply,
+            commands::client_setup::client_setup_disconnect,
+            commands::client_setup::client_setup_test,
+            commands::client_setup::client_setup_open_dir,
             // 日志
             commands::logs::get_logs,
             commands::logs::get_log,

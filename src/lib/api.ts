@@ -5,7 +5,8 @@ import type { Channel, CreateChannelInput, UpdateChannelInput, TestChannelResult
   SecurityFinding, KbKnowledgeBase, KbDocument, KbSource, KbStats, KbConversation,
   SearchResult, RagAnswer, CreateKbInput, UpdateKbInput, ImportSourceInput,
   IndexSummary, DocumentContent, UploadDocumentResult, ConversationMessage, KbChunkView,
-  ServiceStatus } from "../types";
+  ServiceStatus, ClientKind, ClientSetupStatus, ApplyClientInput, ApplyClientResult,
+  DisconnectClientResult, ClientTestResult, SetupModelOption, ClientSetupPreview } from "../types";
 
 // 渠道管理 API
 export const channelApi = {
@@ -171,4 +172,21 @@ export const mcpApi = {
   // MCP 测试台：直连 /mcp 发送 JSON-RPC（initialize / tools/list / tools/call）
   sendRequest: (input: { host: string; method: string; params?: unknown }) =>
     invoke<{ status: number; body: unknown }>("send_mcp_request", { input }),
+};
+
+// 客户端接入 API
+export const clientSetupApi = {
+  status: (client: ClientKind) =>
+    invoke<ClientSetupStatus>("client_setup_status", { client }),
+  listModels: () => invoke<SetupModelOption[]>("client_setup_list_models"),
+  preview: (input: ApplyClientInput) =>
+    invoke<ClientSetupPreview>("client_setup_preview", { input }),
+  apply: (input: ApplyClientInput) =>
+    invoke<ApplyClientResult>("client_setup_apply", { input }),
+  disconnect: (client: ClientKind) =>
+    invoke<DisconnectClientResult>("client_setup_disconnect", { client }),
+  test: (client: ClientKind) =>
+    invoke<ClientTestResult>("client_setup_test", { client }),
+  openDir: (client: ClientKind) =>
+    invoke<void>("client_setup_open_dir", { client }),
 };

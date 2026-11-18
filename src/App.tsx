@@ -11,6 +11,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { UsagePage } from "./pages/UsagePage";
 import { KnowledgeBasePage } from "./pages/KnowledgeBasePage";
 import { McpPage } from "./pages/McpPage";
+import { ClientAccessPage } from "./pages/ClientAccessPage";
 import { useThemeStore } from "./stores/themeStore";
 import { useSettingsStore } from "./stores/settingsStore";
 
@@ -37,6 +38,7 @@ function App() {
           <Route path="/logs" element={<LogsPage />} />
           <Route path="/knowledge" element={<KnowledgeBasePage />} />
           <Route path="/mcp" element={<McpPage />} />
+          <Route path="/client-access" element={<ClientAccessPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </Layout>

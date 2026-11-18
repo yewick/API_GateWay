@@ -404,3 +404,78 @@ export interface ServiceStatus {
     [k: string]: unknown;
   };
 }
+
+// ===== 客户端接入 =====
+
+export type ClientKind = "codex";
+
+export interface ClientSetupStatus {
+  client: ClientKind;
+  display_name: string;
+  installed: boolean;
+  applied: boolean;
+  drift: boolean;
+  config_parse_error: string | null;
+  codex_home: string;
+  config_path: string;
+  auth_path: string;
+  auth_logged_in: boolean;
+  requires_openai_auth: boolean;
+  current_model_provider: string | null;
+  current_model: string | null;
+  yeapi_provider_present: boolean;
+  provider_token_hint: string | null;
+  applied_api_key_id: string | null;
+  applied_api_key_hint: string | null;
+  applied_api_key_valid: boolean;
+  applied_at: string | null;
+  applied_base_url: string | null;
+  gateway_base_url: string;
+  base_url_matches: boolean;
+  backup_path: string | null;
+}
+
+export type ApiKeySelection =
+  | {
+      mode: "new";
+      name: string;
+      allowed_models?: string[];
+      quota_limit?: number;
+      expires_at?: string | null;
+    }
+  | { mode: "existing"; id: string };
+
+export interface ApplyClientInput {
+  client: ClientKind;
+  key: ApiKeySelection;
+  model: string;
+}
+
+export interface ApplyClientResult {
+  status: ClientSetupStatus;
+  backup_path: string | null;
+  restart_required: boolean;
+}
+
+export interface DisconnectClientResult {
+  status: ClientSetupStatus;
+  backup_path: string | null;
+  warnings: string[];
+}
+
+export interface ClientTestResult {
+  ok: boolean;
+  status: number;
+  latency_ms: number;
+  message: string;
+}
+
+export interface SetupModelOption {
+  id: string;
+  owned_by: string;
+}
+
+export interface ClientSetupPreview {
+  config_path: string;
+  snippet: string;
+}
