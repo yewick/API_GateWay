@@ -13,6 +13,7 @@
 
 ### Fixed
 
+- 修复限额密钥在 Claude Code 等客户端下因单次 `max_tokens` 较大被误判为配额不足的问题：配额预检改为「估算请求输入 + 输出预算封顶」，把上游 `max_tokens` 收敛到剩余预算，仅在余额不足以覆盖输入与最小输出时返回 429；同时为 `/v1/messages`、`/v1/responses` 的拒绝路径补写失败日志。
 - 修复 `/v1/responses` 流式事件不符合 Responses 规范导致 Codex 丢弃文本 / 工具调用的问题：补齐 `response.output_item.added/done`、`response.content_part.added/done`、`response.output_text.done`、`response.function_call_arguments.done`，并在 `response.completed` 中回填完整文本与工具调用参数。
 - 修复 Responses 请求的 `input` 为字符串、或消息项省略 `type` 时被丢弃、上游报 `Empty input messages` 的问题。
 - 修复连续 / 并行 `function_call` 被拆成多条 assistant 消息、导致上游报 `tool_calls must be followed by tool messages` 的问题：连续的 `function_call` 现在合并进同一条 assistant 消息。

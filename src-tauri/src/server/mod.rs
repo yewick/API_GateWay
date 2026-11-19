@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod quota;
 pub mod router;
 pub mod handlers;
 

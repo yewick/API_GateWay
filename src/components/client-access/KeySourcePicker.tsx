@@ -22,6 +22,11 @@ const maskKey = (key: string): string => {
   return `${key.slice(0, 6)}…${key.slice(-4)}`;
 };
 
+const quotaLabel = (key: ApiKey): string =>
+  key.quota_limit <= 0
+    ? "不限量"
+    : `剩余 ${Math.max(key.quota_limit - key.quota_used, 0)}`;
+
 export function KeySourcePicker({
   mode,
   onModeChange,
@@ -33,6 +38,15 @@ export function KeySourcePicker({
   namePlaceholder = "Codex",
   nameHint = "接入时自动创建；明文只写入 Codex 配置，不在界面回显。",
 }: KeySourcePickerProps) {
+  const selectedKey = keys.find((key) => key.id === keyId);
+  const quotaHint =
+    selectedKey && selectedKey.quota_limit > 0
+      ? `该密钥剩余 ${Math.max(
+          selectedKey.quota_limit - selectedKey.quota_used,
+          0,
+        )} tokens；Claude Code 等长上下文客户端每轮消耗较大，可能很快耗尽。`
+      : undefined;
+
   return (
     <div className="space-y-3">
       <Tabs
@@ -62,9 +76,10 @@ export function KeySourcePicker({
           value={keyId}
           onChange={(event) => onKeyIdChange(event.target.value)}
           placeholder="请选择"
+          hint={quotaHint}
           options={keys.map((key) => ({
             value: key.id,
-            label: `${key.name} · ${maskKey(key.key)}`,
+            label: `${key.name} · ${maskKey(key.key)} · ${quotaLabel(key)}`,
           }))}
         />
       )}

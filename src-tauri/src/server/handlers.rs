@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use super::auth::key_is_expired;
+use super::quota;
 use super::router::SharedState;
 use crate::adaptor::{get_adaptor, ProxyRequest};
 use crate::core::dispatcher::Dispatcher;
@@ -88,60 +89,95 @@ struct AuthContext {
     api_key_id: String,
     api_key_name: String,
     repo: Arc<Repository>,
+    /// 限额 Key 的输出预算；`None` 表示不限量。
+    quota: Option<quota::QuotaBudget>,
 }
 
 async fn authenticate_and_check_quota(
     shared: &SharedState,
     headers: &HeaderMap,
-    max_tokens: i64,
+    model: &str,
+    body: &serde_json::Value,
+    requested_max_tokens: i64,
 ) -> Result<AuthContext, (u16, String)> {
+    let repo = Arc::new(Repository::new(shared.state.db.pool.clone()));
+    let request_body = serde_json::to_string(body).ok();
+
     let api_key = match protocol::extract_api_key(headers) {
         Some(k) => k,
-        None => return Err((401, "Missing API key".to_string())),
+        None => {
+            write_failed_log(
+                &repo,
+                None,
+                None,
+                model,
+                401,
+                "Missing API key",
+                request_body.as_deref(),
+            )
+            .await;
+            return Err((401, "Missing API key".to_string()));
+        }
     };
 
-    let repo = Arc::new(Repository::new(shared.state.db.pool.clone()));
     let key_record = match repo.get_api_key_by_key(&api_key).await {
         Ok(k) => k,
-        Err(_) => return Err((401, "Invalid API key".to_string())),
+        Err(_) => {
+            write_failed_log(
+                &repo,
+                None,
+                None,
+                model,
+                401,
+                "Invalid API key",
+                request_body.as_deref(),
+            )
+            .await;
+            return Err((401, "Invalid API key".to_string()));
+        }
     };
 
     if let Some(ref expires_at) = key_record.expires_at {
         if key_is_expired(expires_at) {
+            write_failed_log(
+                &repo,
+                Some(&key_record.id),
+                Some(&key_record.name),
+                model,
+                401,
+                "API key has expired",
+                request_body.as_deref(),
+            )
+            .await;
             return Err((401, "API key has expired".to_string()));
         }
     }
 
-    if key_record.quota_limit > 0 {
-        let remaining = key_record.quota_limit - key_record.quota_used;
-        if remaining <= 0 {
-            return Err((429, "Quota exceeded".to_string()));
-        }
-        let projected = key_record.quota_used.saturating_add(max_tokens);
-        if projected > key_record.quota_limit {
-            return Err((
+    // 配额预检：估算输入 + 输出预算，而不是把 max_tokens 当成预计消耗。
+    let estimated_input = quota::estimate_input_tokens(body);
+    let remaining = quota::remaining(key_record.quota_limit, key_record.quota_used);
+    let budget = match quota::decide_quota(remaining, estimated_input, requested_max_tokens) {
+        Ok(budget) => budget,
+        Err(message) => {
+            write_failed_log(
+                &repo,
+                Some(&key_record.id),
+                Some(&key_record.name),
+                model,
                 429,
-                format!(
-                    "Quota exceeded (remaining: {}, max_tokens: {})",
-                    remaining, max_tokens
-                ),
-            ));
+                &message,
+                request_body.as_deref(),
+            )
+            .await;
+            return Err((429, message));
         }
-        if remaining < 2000 {
-            return Err((
-                429,
-                format!(
-                    "Quota nearly exhausted — remaining {} tokens, at least 2000 required",
-                    remaining
-                ),
-            ));
-        }
-    }
+    };
 
     Ok(AuthContext {
         api_key_id: key_record.id,
         api_key_name: key_record.name,
         repo,
+        quota: remaining.map(|_| budget),
     })
 }
 
@@ -295,63 +331,37 @@ pub async fn handle_chat_completions(
         }
     }
 
-    // 3. 配额检查（带 max_tokens 预估缓冲）
-    if key_record.quota_limit > 0 {
-        let remaining = key_record.quota_limit - key_record.quota_used;
-        if remaining <= 0 {
-            write_failed_log(
-                &repo,
-                Some(&key_record.id),
-                Some(&key_record.name),
-                &model,
-                429,
-                "Quota exceeded",
-                Some(body_str.as_ref()),
-            )
-            .await;
-            return error_response(429, "Quota exceeded");
-        }
-        // 用请求中的 max_tokens 做最低限度预估
-        let max_tokens = json.get("max_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-        let projected = key_record.quota_used.saturating_add(max_tokens);
-        if projected > key_record.quota_limit {
-            let msg = format!(
-                "Quota exceeded (remaining: {}, max_tokens: {})",
-                remaining, max_tokens
-            );
-            write_failed_log(
-                &repo,
-                Some(&key_record.id),
-                Some(&key_record.name),
-                &model,
-                429,
-                &msg,
-                Some(body_str.as_ref()),
-            )
-            .await;
-            return error_response(429, &msg);
-        }
-        if remaining < 2000 {
-            let msg = format!(
-                "Quota nearly exhausted — remaining {} tokens, at least 2000 required",
-                remaining
-            );
-            write_failed_log(
-                &repo,
-                Some(&key_record.id),
-                Some(&key_record.name),
-                &model,
-                429,
-                &msg,
-                Some(body_str.as_ref()),
-            )
-            .await;
-            return error_response(429, &msg);
-        }
-    }
+    // 3. 配额预检：估算输入 + 输出预算（不把 max_tokens 当预计消耗）
+    let quota_remaining = quota::remaining(key_record.quota_limit, key_record.quota_used);
+    let requested_max_tokens = json.get("max_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+    let estimated_input = quota::estimate_input_tokens(&json);
+    let quota_budget =
+        match quota::decide_quota(quota_remaining, estimated_input, requested_max_tokens) {
+            Ok(budget) => budget,
+            Err(message) => {
+                write_failed_log(
+                    &repo,
+                    Some(&key_record.id),
+                    Some(&key_record.name),
+                    &model,
+                    429,
+                    &message,
+                    Some(body_str.as_ref()),
+                )
+                .await;
+                return error_response(429, &message);
+            }
+        };
 
     // 4. 保存原始请求体（日志用）
     let request_body_str = serde_json::to_string(&json).unwrap_or_default();
+
+    // 4.1 把上游 max_tokens 收敛到剩余预算（原始请求体已用于日志）
+    let quota_for_clamp = quota_remaining.map(|_| quota_budget);
+    if let Some(effective) = quota::clamp_max_tokens(quota_for_clamp.as_ref(), requested_max_tokens)
+    {
+        json["max_tokens"] = serde_json::json!(effective);
+    }
 
     // 4.5 追踪 ID（下游可注入）
     let trace_id = protocol::extract_trace_id(&headers);
@@ -988,10 +998,17 @@ pub async fn handle_messages(
         .unwrap_or(0);
 
     // 鉴权 + 配额
-    let auth = match authenticate_and_check_quota(&shared, &headers, max_tokens).await {
-        Ok(a) => a,
-        Err((code, msg)) => return anthropic_error_response(code, &msg),
-    };
+    let auth =
+        match authenticate_and_check_quota(&shared, &headers, &model, &openai_body, max_tokens)
+            .await
+        {
+            Ok(a) => a,
+            Err((code, msg)) => return anthropic_error_response(code, &msg),
+        };
+
+    if let Some(effective) = quota::clamp_max_tokens(auth.quota.as_ref(), max_tokens) {
+        openai_body["max_tokens"] = serde_json::json!(effective);
+    }
 
     let request_body_str = serde_json::to_string(&json).unwrap_or_default();
     let trace_id = protocol::extract_trace_id(&headers);
@@ -1079,10 +1096,17 @@ pub async fn handle_responses(
         .unwrap_or(0);
 
     // 鉴权 + 配额
-    let auth = match authenticate_and_check_quota(&shared, &headers, max_tokens).await {
-        Ok(a) => a,
-        Err((code, msg)) => return error_response(code, &msg),
-    };
+    let auth =
+        match authenticate_and_check_quota(&shared, &headers, &model, &openai_body, max_tokens)
+            .await
+        {
+            Ok(a) => a,
+            Err((code, msg)) => return error_response(code, &msg),
+        };
+
+    if let Some(effective) = quota::clamp_max_tokens(auth.quota.as_ref(), max_tokens) {
+        openai_body["max_tokens"] = serde_json::json!(effective);
+    }
 
     let request_body_str = serde_json::to_string(&json).unwrap_or_default();
     let trace_id = protocol::extract_trace_id(&headers);
