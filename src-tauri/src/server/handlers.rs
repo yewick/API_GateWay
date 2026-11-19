@@ -1,8 +1,8 @@
 use axum::{
     body::Body,
     extract::State,
-    http::{HeaderMap, StatusCode, header},
-    response::{Json, IntoResponse, Response},
+    http::{header, HeaderMap, StatusCode},
+    response::{IntoResponse, Json, Response},
 };
 use bytes::Bytes;
 use futures_util::StreamExt;
@@ -121,13 +121,19 @@ async fn authenticate_and_check_quota(
         if projected > key_record.quota_limit {
             return Err((
                 429,
-                format!("Quota exceeded (remaining: {}, max_tokens: {})", remaining, max_tokens),
+                format!(
+                    "Quota exceeded (remaining: {}, max_tokens: {})",
+                    remaining, max_tokens
+                ),
             ));
         }
         if remaining < 2000 {
             return Err((
                 429,
-                format!("Quota nearly exhausted — remaining {} tokens, at least 2000 required", remaining),
+                format!(
+                    "Quota nearly exhausted — remaining {} tokens, at least 2000 required",
+                    remaining
+                ),
             ));
         }
     }
@@ -183,6 +189,27 @@ async fn write_failed_log(
     let _ = repo.create_log(&log).await;
 }
 
+// ---------- 客户端模型路由别名 ----------
+
+/// Claude 桌面端的模型名必须是 Anthropic 风格；接入向导把路由名写入
+/// `claude.desktop_aliases`，这里在入口解析成 YeAPI 的真实模型。
+fn resolve_model_alias(app: &tauri::AppHandle, model: &str) -> String {
+    use tauri_plugin_store::StoreExt;
+
+    if let Ok(store) = app.store("settings.json") {
+        let aliases = store.get("claude.desktop_aliases");
+        if let Some(target) = aliases
+            .as_ref()
+            .and_then(|value| value.as_object())
+            .and_then(|map| map.get(model))
+            .and_then(|value| value.as_str())
+        {
+            return target.to_string();
+        }
+    }
+    model.to_string()
+}
+
 // ---------- /v1/chat/completions ----------
 
 pub async fn handle_chat_completions(
@@ -192,29 +219,61 @@ pub async fn handle_chat_completions(
 ) -> Response {
     // 1. 解析 JSON
     let body_str = String::from_utf8_lossy(&body);
-    let json: serde_json::Value = match serde_json::from_str(&body_str) {
+    let mut json: serde_json::Value = match serde_json::from_str(&body_str) {
         Ok(j) => j,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("Invalid JSON: {}", e)).into_response(),
     };
 
-    let is_stream = json.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
-    let model = json.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
+    let is_stream = json
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
+    let requested_model = json
+        .get("model")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
+    let model = resolve_model_alias(&shared.app, &requested_model);
+    if model != requested_model {
+        json["model"] = serde_json::json!(model);
+    }
 
     let repo = Arc::new(Repository::new(shared.state.db.pool.clone()));
 
     // 2. API Key 鉴权
-    let auth_header = headers.get("authorization").and_then(|h| h.to_str().ok()).unwrap_or("");
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
     let api_key = auth_header.strip_prefix("Bearer ").unwrap_or("").trim();
 
     if api_key.is_empty() {
-        write_failed_log(&repo, None, None, &model, 401, "Missing API key", Some(body_str.as_ref())).await;
+        write_failed_log(
+            &repo,
+            None,
+            None,
+            &model,
+            401,
+            "Missing API key",
+            Some(body_str.as_ref()),
+        )
+        .await;
         return (StatusCode::UNAUTHORIZED, "Missing API key").into_response();
     }
 
     let key_record = match repo.get_api_key_by_key(api_key).await {
         Ok(k) => k,
         Err(_) => {
-            write_failed_log(&repo, None, None, &model, 401, "Invalid API key", Some(body_str.as_ref())).await;
+            write_failed_log(
+                &repo,
+                None,
+                None,
+                &model,
+                401,
+                "Invalid API key",
+                Some(body_str.as_ref()),
+            )
+            .await;
             return (StatusCode::UNAUTHORIZED, "Invalid API key").into_response();
         }
     };
@@ -222,7 +281,16 @@ pub async fn handle_chat_completions(
     // 2.5 过期检查
     if let Some(ref expires_at) = key_record.expires_at {
         if key_is_expired(expires_at) {
-            write_failed_log(&repo, Some(&key_record.id), Some(&key_record.name), &model, 401, "API key has expired", Some(body_str.as_ref())).await;
+            write_failed_log(
+                &repo,
+                Some(&key_record.id),
+                Some(&key_record.name),
+                &model,
+                401,
+                "API key has expired",
+                Some(body_str.as_ref()),
+            )
+            .await;
             return error_response(401, "API key has expired");
         }
     }
@@ -231,21 +299,36 @@ pub async fn handle_chat_completions(
     if key_record.quota_limit > 0 {
         let remaining = key_record.quota_limit - key_record.quota_used;
         if remaining <= 0 {
-            write_failed_log(&repo, Some(&key_record.id), Some(&key_record.name), &model, 429, "Quota exceeded", Some(body_str.as_ref())).await;
+            write_failed_log(
+                &repo,
+                Some(&key_record.id),
+                Some(&key_record.name),
+                &model,
+                429,
+                "Quota exceeded",
+                Some(body_str.as_ref()),
+            )
+            .await;
             return error_response(429, "Quota exceeded");
         }
         // 用请求中的 max_tokens 做最低限度预估
-        let max_tokens = json
-            .get("max_tokens")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+        let max_tokens = json.get("max_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
         let projected = key_record.quota_used.saturating_add(max_tokens);
         if projected > key_record.quota_limit {
             let msg = format!(
                 "Quota exceeded (remaining: {}, max_tokens: {})",
                 remaining, max_tokens
             );
-            write_failed_log(&repo, Some(&key_record.id), Some(&key_record.name), &model, 429, &msg, Some(body_str.as_ref())).await;
+            write_failed_log(
+                &repo,
+                Some(&key_record.id),
+                Some(&key_record.name),
+                &model,
+                429,
+                &msg,
+                Some(body_str.as_ref()),
+            )
+            .await;
             return error_response(429, &msg);
         }
         if remaining < 2000 {
@@ -253,7 +336,16 @@ pub async fn handle_chat_completions(
                 "Quota nearly exhausted — remaining {} tokens, at least 2000 required",
                 remaining
             );
-            write_failed_log(&repo, Some(&key_record.id), Some(&key_record.name), &model, 429, &msg, Some(body_str.as_ref())).await;
+            write_failed_log(
+                &repo,
+                Some(&key_record.id),
+                Some(&key_record.name),
+                &model,
+                429,
+                &msg,
+                Some(body_str.as_ref()),
+            )
+            .await;
             return error_response(429, &msg);
         }
     }
@@ -266,10 +358,29 @@ pub async fn handle_chat_completions(
 
     // 5. 分流：流式 vs 非流式
     if is_stream {
-        handle_stream(shared, json, key_record.id, key_record.name, request_body_str, trace_id).await
+        handle_stream(
+            shared,
+            json,
+            key_record.id,
+            key_record.name,
+            request_body_str,
+            trace_id,
+        )
+        .await
     } else {
-        match proxy::handle_request(&repo, &shared.app, &key_record.id, &key_record.name,
-                                     json, false, Some(request_body_str), trace_id, "chat").await {
+        match proxy::handle_request(
+            &repo,
+            &shared.app,
+            &key_record.id,
+            &key_record.name,
+            json,
+            false,
+            Some(request_body_str),
+            trace_id,
+            "chat",
+        )
+        .await
+        {
             Ok(result) => (StatusCode::OK, Json(result.body)).into_response(),
             Err((code, msg)) => error_response(code, &msg),
         }
@@ -290,9 +401,18 @@ fn parse_usage_from_chunk(text: &str) -> Option<(i64, i64, i64)> {
         }
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(data_str) {
             if let Some(usage) = json.get("usage") {
-                let prompt = usage.get("prompt_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-                let completion = usage.get("completion_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-                let total = usage.get("total_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                let prompt = usage
+                    .get("prompt_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let completion = usage
+                    .get("completion_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let total = usage
+                    .get("total_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
                 if total > 0 || prompt > 0 || completion > 0 {
                     return Some((prompt, completion, total));
                 }
@@ -320,10 +440,7 @@ async fn handle_stream(
     // 安全扫描（与非流式路径一致）
     let security_settings = security::get_security_settings(&shared.app);
     // 加载自定义规则
-    let custom_rules = repo
-        .get_enabled_custom_rules()
-        .await
-        .unwrap_or_default();
+    let custom_rules = repo.get_enabled_custom_rules().await.unwrap_or_default();
     // 加载被禁用的内置规则
     let disabled_builtin: HashSet<String> = repo
         .get_all_builtin_rules()
@@ -333,8 +450,12 @@ async fn handle_stream(
         .filter(|r| r.enabled == 0)
         .map(|r| r.rule_id)
         .collect();
-    let security_result =
-        security::scan_request(&json, &security_settings, Some(&custom_rules), &disabled_builtin);
+    let security_result = security::scan_request(
+        &json,
+        &security_settings,
+        Some(&custom_rules),
+        &disabled_builtin,
+    );
     if matches!(security_result.action, SecurityAction::Block) {
         let log = RequestLog {
             id: utils::id::new_id(),
@@ -368,11 +489,13 @@ async fn handle_stream(
         };
         let log_id = log.id.clone();
         let _ = repo.create_log(&log).await;
-        let _ = repo.create_security_findings(
-            &log_id,
-            &security_result.findings,
-            security_result.action.as_str(),
-        ).await;
+        let _ = repo
+            .create_security_findings(
+                &log_id,
+                &security_result.findings,
+                security_result.action.as_str(),
+            )
+            .await;
         return error_response(451, &security_result.summary);
     }
 
@@ -539,7 +662,10 @@ async fn handle_stream(
     }
 
     // 所有渠道失败
-    error_response(502, &format!("All stream channels failed: {:?}", last_error))
+    error_response(
+        502,
+        &format!("All stream channels failed: {:?}", last_error),
+    )
 }
 
 // ---------- 多协议流式转换（Anthropic / Responses 共用骨架） ----------
@@ -603,7 +729,12 @@ async fn proxy_stream<C: StreamConverter + Send>(
         .filter(|r| r.enabled == 0)
         .map(|r| r.rule_id)
         .collect();
-    let security_result = security::scan_request(&openai_body, &security_settings, Some(&custom_rules), &disabled_builtin);
+    let security_result = security::scan_request(
+        &openai_body,
+        &security_settings,
+        Some(&custom_rules),
+        &disabled_builtin,
+    );
     if matches!(security_result.action, SecurityAction::Block) {
         let log = RequestLog {
             id: utils::id::new_id(),
@@ -638,7 +769,11 @@ async fn proxy_stream<C: StreamConverter + Send>(
         let log_id = log.id.clone();
         let _ = repo.create_log(&log).await;
         let _ = repo
-            .create_security_findings(&log_id, &security_result.findings, security_result.action.as_str())
+            .create_security_findings(
+                &log_id,
+                &security_result.findings,
+                security_result.action.as_str(),
+            )
             .await;
         return error_response(451, &security_result.summary);
     }
@@ -813,7 +948,10 @@ async fn proxy_stream<C: StreamConverter + Send>(
         }
     }
 
-    error_response(502, &format!("All stream channels failed: {:?}", last_error))
+    error_response(
+        502,
+        &format!("All stream channels failed: {:?}", last_error),
+    )
 }
 
 // ---------- /v1/messages (Anthropic Messages API) ----------
@@ -830,10 +968,24 @@ pub async fn handle_messages(
     };
 
     // 转换 Anthropic 请求为 OpenAI 格式
-    let openai_body = protocol::anthropic_to_openai(&json);
-    let model = openai_body.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
-    let is_stream = openai_body.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
-    let max_tokens = openai_body.get("max_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+    let mut openai_body = protocol::anthropic_to_openai(&json);
+    let requested_model = openai_body
+        .get("model")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
+    let model = resolve_model_alias(&shared.app, &requested_model);
+    if model != requested_model {
+        openai_body["model"] = serde_json::json!(model);
+    }
+    let is_stream = openai_body
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
+    let max_tokens = openai_body
+        .get("max_tokens")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
 
     // 鉴权 + 配额
     let auth = match authenticate_and_check_quota(&shared, &headers, max_tokens).await {
@@ -847,11 +999,26 @@ pub async fn handle_messages(
     if is_stream {
         handle_messages_stream(shared, auth, openai_body, model, request_body_str, trace_id).await
     } else {
-        match proxy::handle_request(&auth.repo, &shared.app, &auth.api_key_id, &auth.api_key_name,
-                                     openai_body, false, Some(request_body_str), trace_id, "messages").await {
+        match proxy::handle_request(
+            &auth.repo,
+            &shared.app,
+            &auth.api_key_id,
+            &auth.api_key_name,
+            openai_body,
+            false,
+            Some(request_body_str),
+            trace_id,
+            "messages",
+        )
+        .await
+        {
             Ok(result) => {
                 let anthropic_resp = protocol::openai_to_anthropic(&result.body, &model);
-                (StatusCode::from_u16(result.status).unwrap_or(StatusCode::OK), Json(anthropic_resp)).into_response()
+                (
+                    StatusCode::from_u16(result.status).unwrap_or(StatusCode::OK),
+                    Json(anthropic_resp),
+                )
+                    .into_response()
             }
             Err((code, msg)) => anthropic_error_response(code, &msg),
         }
@@ -866,7 +1033,16 @@ async fn handle_messages_stream(
     request_body: String,
     trace_id: Option<String>,
 ) -> Response {
-    proxy_stream::<AnthropicStreamConverter>(shared, auth, openai_body, model, request_body, trace_id, "messages").await
+    proxy_stream::<AnthropicStreamConverter>(
+        shared,
+        auth,
+        openai_body,
+        model,
+        request_body,
+        trace_id,
+        "messages",
+    )
+    .await
 }
 
 // ---------- /v1/responses (OpenAI Responses API) ----------
@@ -883,10 +1059,24 @@ pub async fn handle_responses(
     };
 
     // 转换 Responses 请求为 OpenAI 格式
-    let openai_body = protocol::responses_to_openai(&json);
-    let model = openai_body.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
-    let is_stream = openai_body.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
-    let max_tokens = openai_body.get("max_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+    let mut openai_body = protocol::responses_to_openai(&json);
+    let requested_model = openai_body
+        .get("model")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
+    let model = resolve_model_alias(&shared.app, &requested_model);
+    if model != requested_model {
+        openai_body["model"] = serde_json::json!(model);
+    }
+    let is_stream = openai_body
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
+    let max_tokens = openai_body
+        .get("max_tokens")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
 
     // 鉴权 + 配额
     let auth = match authenticate_and_check_quota(&shared, &headers, max_tokens).await {
@@ -900,11 +1090,26 @@ pub async fn handle_responses(
     if is_stream {
         handle_responses_stream(shared, auth, openai_body, model, request_body_str, trace_id).await
     } else {
-        match proxy::handle_request(&auth.repo, &shared.app, &auth.api_key_id, &auth.api_key_name,
-                                     openai_body, false, Some(request_body_str), trace_id, "responses").await {
+        match proxy::handle_request(
+            &auth.repo,
+            &shared.app,
+            &auth.api_key_id,
+            &auth.api_key_name,
+            openai_body,
+            false,
+            Some(request_body_str),
+            trace_id,
+            "responses",
+        )
+        .await
+        {
             Ok(result) => {
                 let responses_resp = protocol::openai_to_responses(&result.body, &model);
-                (StatusCode::from_u16(result.status).unwrap_or(StatusCode::OK), Json(responses_resp)).into_response()
+                (
+                    StatusCode::from_u16(result.status).unwrap_or(StatusCode::OK),
+                    Json(responses_resp),
+                )
+                    .into_response()
             }
             Err((code, msg)) => error_response(code, &msg),
         }
@@ -919,7 +1124,16 @@ async fn handle_responses_stream(
     request_body: String,
     trace_id: Option<String>,
 ) -> Response {
-    proxy_stream::<ResponsesStreamConverter>(shared, auth, openai_body, model, request_body, trace_id, "responses").await
+    proxy_stream::<ResponsesStreamConverter>(
+        shared,
+        auth,
+        openai_body,
+        model,
+        request_body,
+        trace_id,
+        "responses",
+    )
+    .await
 }
 
 // ---------- /v1/models ----------
@@ -942,7 +1156,11 @@ pub async fn handle_list_models(State(shared): State<SharedState>) -> Response {
                 .collect();
             Json(serde_json::json!({ "object": "list", "data": models })).into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {}", e)).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("DB error: {}", e),
+        )
+            .into_response(),
     }
 }
 
@@ -950,13 +1168,17 @@ pub async fn handle_list_models(State(shared): State<SharedState>) -> Response {
 
 pub async fn handle_health(State(shared): State<SharedState>) -> Response {
     let port = shared.state.server_port.read().await.clone();
-    let running = shared.state.server_running.load(std::sync::atomic::Ordering::SeqCst);
+    let running = shared
+        .state
+        .server_running
+        .load(std::sync::atomic::Ordering::SeqCst);
     Json(serde_json::json!({
         "status": "ok",
         "running": running,
         "port": port,
         "url": format!("http://127.0.0.1:{}", port),
-    })).into_response()
+    }))
+    .into_response()
 }
 
 // ---------- 占位端点（router 已注册，功能后续实现） ----------

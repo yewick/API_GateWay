@@ -9,6 +9,7 @@
 ### Added
 
 - **客户端接入向导（Codex）**：新增「客户端接入」页面，可新建 / 选择 YeAPI 密钥并一键写入 `~/.codex/config.toml`（专用 `yeapi` provider、`responses` 协议、`experimental_bearer_token`），无需登录 OpenAI 账号。支持配置预览、连接测试、断开恢复与首次写入前备份；不修改 `auth.json`，并按本机 ChatGPT 登录态自动设置 `requires_openai_auth`。接入前校验模型是否命中启用渠道，并生成 `yeapi-model-catalog.json` 供 Codex 模型菜单使用。
+- **客户端接入向导（Claude Code）**：在「客户端接入」页新增 Claude Code 标签，可同时接入 Claude Code CLI 与 Claude 桌面端。CLI 侧增量维护 `~/.claude/settings.json` 的 `env`（`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`、`ANTHROPIC_MODEL` 及 Opus / Sonnet / Haiku 别名），保留其余设置与键序；桌面端侧新建并切换名为 `YeAPI` 的第三方推理档案，断开时恢复原档案。支持配置预览、Anthropic `/v1/messages` 连接测试、断开恢复与首次写入前备份。
 
 ### Fixed
 

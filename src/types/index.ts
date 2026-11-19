@@ -407,7 +407,47 @@ export interface ServiceStatus {
 
 // ===== 客户端接入 =====
 
-export type ClientKind = "codex";
+export type ClientKind = "codex" | "claude";
+
+export interface CodexStatusDetail {
+  auth_path: string;
+  auth_logged_in: boolean;
+  requires_openai_auth: boolean;
+  current_model_provider: string | null;
+  model_catalog_json: string | null;
+  catalog_matches: boolean;
+  yeapi_provider_present: boolean;
+  provider_token_hint: string | null;
+}
+
+export interface ClaudeEnvModels {
+  opus: string | null;
+  sonnet: string | null;
+  haiku: string | null;
+}
+
+export interface ClaudeDesktopStatus {
+  detected: boolean;
+  config_dir: string | null;
+  meta_path: string | null;
+  third_party_mode: boolean;
+  applied_profile_name: string | null;
+  applied_base_url: string | null;
+  applied_models: string[];
+  yeapi_profile_present: boolean;
+  applied: boolean;
+  drift: boolean;
+  base_url_matches: boolean;
+}
+
+export interface ClaudeStatusDetail {
+  env_present: boolean;
+  current_base_url: string | null;
+  env_models: ClaudeEnvModels;
+  top_level_model: string | null;
+  anthropic_api_key_present: boolean;
+  desktop: ClaudeDesktopStatus;
+}
 
 export interface ClientSetupStatus {
   client: ClientKind;
@@ -416,17 +456,9 @@ export interface ClientSetupStatus {
   applied: boolean;
   drift: boolean;
   config_parse_error: string | null;
-  codex_home: string;
+  config_home: string;
   config_path: string;
-  auth_path: string;
-  auth_logged_in: boolean;
-  requires_openai_auth: boolean;
-  current_model_provider: string | null;
   current_model: string | null;
-  model_catalog_json: string | null;
-  catalog_matches: boolean;
-  yeapi_provider_present: boolean;
-  provider_token_hint: string | null;
   applied_api_key_id: string | null;
   applied_api_key_hint: string | null;
   applied_api_key_valid: boolean;
@@ -435,6 +467,8 @@ export interface ClientSetupStatus {
   gateway_base_url: string;
   base_url_matches: boolean;
   backup_path: string | null;
+  codex?: CodexStatusDetail;
+  claude?: ClaudeStatusDetail;
 }
 
 export type ApiKeySelection =
@@ -447,10 +481,19 @@ export type ApiKeySelection =
     }
   | { mode: "existing"; id: string };
 
+export interface ClaudeApplyOptions {
+  opus_model?: string;
+  sonnet_model?: string;
+  haiku_model?: string;
+  apply_cli?: boolean;
+  apply_desktop?: boolean;
+}
+
 export interface ApplyClientInput {
   client: ClientKind;
   key: ApiKeySelection;
   model: string;
+  claude?: ClaudeApplyOptions;
 }
 
 export interface ApplyClientResult {
@@ -477,8 +520,15 @@ export interface SetupModelOption {
   owned_by: string;
 }
 
+export interface DesktopPreview {
+  config_path: string;
+  snippet: string;
+  warning: string | null;
+}
+
 export interface ClientSetupPreview {
   config_path: string;
   snippet: string;
   warning: string | null;
+  desktop?: DesktopPreview;
 }

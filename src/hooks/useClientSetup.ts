@@ -8,7 +8,16 @@ export const clientSetupKeys = {
   all: ["client-setup"] as const,
   status: (client: ClientKind) => ["client-setup", "status", client] as const,
   models: ["client-setup", "models"] as const,
-  preview: (model: string) => ["client-setup", "preview", model] as const,
+  preview: (input: ApplyClientInput | null) =>
+    [
+      "client-setup",
+      "preview",
+      input?.client ?? "",
+      input?.model ?? "",
+      input?.claude?.opus_model ?? "",
+      input?.claude?.sonnet_model ?? "",
+      input?.claude?.haiku_model ?? "",
+    ] as const,
 };
 
 export const useClientSetupStatus = (client: ClientKind) =>
@@ -26,7 +35,7 @@ export const useClientSetupModels = () =>
 
 export const useClientSetupPreview = (input: ApplyClientInput | null) =>
   useQuery({
-    queryKey: clientSetupKeys.preview(input?.model ?? ""),
+    queryKey: clientSetupKeys.preview(input),
     queryFn: () => clientSetupApi.preview(input as ApplyClientInput),
     enabled: !!input && input.model.trim().length > 0,
   });
@@ -36,7 +45,7 @@ export const useApplyClientSetup = () => {
   return useMutation({
     mutationFn: (input: ApplyClientInput) => clientSetupApi.apply(input),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: clientSetupKeys.status("codex") });
+      qc.invalidateQueries({ queryKey: clientSetupKeys.all });
       qc.invalidateQueries({ queryKey: apiKeyKeys.all });
       qc.invalidateQueries({ queryKey: dashboardKeys.stats });
     },
@@ -48,7 +57,7 @@ export const useDisconnectClientSetup = () => {
   return useMutation({
     mutationFn: (client: ClientKind) => clientSetupApi.disconnect(client),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: clientSetupKeys.status("codex") });
+      qc.invalidateQueries({ queryKey: clientSetupKeys.all });
       qc.invalidateQueries({ queryKey: apiKeyKeys.all });
       qc.invalidateQueries({ queryKey: dashboardKeys.stats });
     },

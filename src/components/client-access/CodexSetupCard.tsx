@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -14,6 +13,7 @@ import { Input } from "../ui/Input";
 import { Select } from "../ui/Select";
 import { ConfigPreview } from "./ConfigPreview";
 import { KeySourcePicker } from "./KeySourcePicker";
+import { InfoRow, Notice } from "./SetupInfo";
 import type {
   ApiKey,
   ClientSetupPreview,
@@ -47,47 +47,6 @@ interface CodexSetupCardProps {
   testResult: ClientTestResult | null;
   restartRequired: boolean;
   disconnectedWarnings: string[];
-}
-
-function InfoRow({
-  label,
-  value,
-  mono = false,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-}) {
-  return (
-    <div className="min-w-0">
-      <div className="text-[11px] text-text-muted">{label}</div>
-      <div
-        className={`text-xs text-text-primary truncate ${mono ? "mono" : ""}`}
-        title={value}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function Notice({
-  tone,
-  children,
-}: {
-  tone: "info" | "warning" | "danger";
-  children: ReactNode;
-}) {
-  const classes = {
-    info: "bg-info/10 border-info/30 text-info",
-    warning: "bg-warning/10 border-warning/30 text-warning",
-    danger: "bg-danger/10 border-danger/30 text-danger",
-  }[tone];
-  return (
-    <div className={`rounded-lg border px-3 py-2 text-xs leading-relaxed ${classes}`}>
-      {children}
-    </div>
-  );
 }
 
 export function CodexSetupCard({
@@ -145,18 +104,18 @@ export function CodexSetupCard({
     >
       <div className="space-y-5">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3">
-          <InfoRow label="配置目录" value={status.codex_home} mono />
+          <InfoRow label="配置目录" value={status.config_home} mono />
           <InfoRow label="网关地址" value={status.gateway_base_url} mono />
           <InfoRow
             label="当前 provider"
-            value={status.current_model_provider ?? "—"}
+            value={status.codex?.current_model_provider ?? "—"}
           />
           <InfoRow label="当前模型" value={status.current_model ?? "—"} />
         </div>
 
         {!status.installed && (
           <Notice tone="info">
-            未检测到 Codex 配置目录，接入时会自动创建 {status.codex_home}。
+            未检测到 Codex 配置目录，接入时会自动创建 {status.config_home}。
           </Notice>
         )}
 
@@ -181,9 +140,9 @@ export function CodexSetupCard({
           </Notice>
         )}
 
-        {status.applied && !status.catalog_matches && (
+        {status.applied && status.codex?.catalog_matches === false && (
           <Notice tone="warning">
-            模型目录仍指向 {status.model_catalog_json ?? "未设置"}
+            模型目录仍指向 {status.codex?.model_catalog_json ?? "未设置"}
             ，Codex 的模型菜单可能包含 YeAPI 不支持的模型。请重新接入以生成
             yeapi-model-catalog.json。
           </Notice>
@@ -255,7 +214,7 @@ export function CodexSetupCard({
         <div className="flex flex-wrap items-center gap-2">
           <Button onClick={onApply} loading={applying}>
             <RefreshCw size={15} />
-            {status.applied || status.yeapi_provider_present
+            {status.applied || status.codex?.yeapi_provider_present
               ? "重新接入"
               : "接入 Codex"}
           </Button>

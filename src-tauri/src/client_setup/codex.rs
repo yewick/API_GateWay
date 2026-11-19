@@ -1,7 +1,7 @@
 //! Codex 配置（`~/.codex/config.toml`）的检测、合并与断开。
 
 use super::state::{self, ClientRecord, PreviousValues};
-use super::{ClientPaths, ClientSetupStatus};
+use super::{key_hint, ClientPaths, ClientSetupStatus, CodexStatusDetail};
 use serde_json::{json, Value};
 use std::path::Path;
 use toml_edit::{value, DocumentMut, Item, Table, TableLike, Value as TomlValue};
@@ -190,8 +190,13 @@ pub fn status(
             && token_fingerprint.as_deref() == Some(record.key_fingerprint.as_str())
     });
     let drift = record.is_some() && !applied && config_parse_error.is_none();
-    let auth_logged_in = auth_logged_in(&paths.auth);
+    let auth_logged_in = paths.auth.as_deref().map(auth_logged_in).unwrap_or(false);
     let provider_token_hint = token.as_deref().map(key_hint);
+    let auth_path = paths
+        .auth
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_default();
 
     ClientSetupStatus {
         client: super::ClientKind::Codex.as_str().to_string(),
@@ -200,20 +205,12 @@ pub fn status(
         applied,
         drift,
         config_parse_error,
-        codex_home: paths.home.to_string_lossy().to_string(),
+        config_home: paths.home.to_string_lossy().to_string(),
         config_path: paths.config.to_string_lossy().to_string(),
-        auth_path: paths.auth.to_string_lossy().to_string(),
-        auth_logged_in,
-        requires_openai_auth: auth_logged_in,
-        current_model_provider,
         current_model,
-        model_catalog_json,
-        catalog_matches,
-        yeapi_provider_present,
-        provider_token_hint: provider_token_hint.clone(),
         applied_api_key_id: record.map(|record| record.api_key_id.clone()),
         applied_api_key_hint: if record.is_some() {
-            provider_token_hint
+            provider_token_hint.clone()
         } else {
             None
         },
@@ -225,6 +222,17 @@ pub fn status(
             .map(|record| record.base_url == gateway_base_url)
             .unwrap_or(false),
         backup_path: record.and_then(|record| record.backup_path.clone()),
+        codex: Some(CodexStatusDetail {
+            auth_path,
+            auth_logged_in,
+            requires_openai_auth: auth_logged_in,
+            current_model_provider,
+            model_catalog_json,
+            catalog_matches,
+            yeapi_provider_present,
+            provider_token_hint,
+        }),
+        claude: None,
     }
 }
 
@@ -331,15 +339,6 @@ pub fn disconnect_config(
     ))
 }
 
-pub fn key_hint(token: &str) -> String {
-    let count = token.chars().count();
-    if count <= 4 {
-        return token.to_string();
-    }
-    let tail: String = token.chars().skip(count - 4).collect();
-    format!("****{tail}")
-}
-
 fn parse_doc(text: Option<&str>) -> (Option<DocumentMut>, Option<String>) {
     match text {
         None => (None, None),
@@ -442,7 +441,7 @@ mod tests {
     fn record(previous: PreviousValues, model: &str, fingerprint: &str) -> ClientRecord {
         ClientRecord {
             applied_at: "now".to_string(),
-            codex_home: "/tmp/.codex".to_string(),
+            config_home: "/tmp/.codex".to_string(),
             config_path: "/tmp/.codex/config.toml".to_string(),
             provider_id: PROVIDER_ID.to_string(),
             base_url: "http://127.0.0.1:8777/v1".to_string(),
@@ -450,6 +449,7 @@ mod tests {
             api_key_id: "key-id".to_string(),
             key_fingerprint: fingerprint.to_string(),
             previous,
+            claude: None,
             backup_path: None,
         }
     }
@@ -613,7 +613,7 @@ experimental_bearer_token = "old-key"
         let paths = ClientPaths {
             home: dir.clone(),
             config: dir.join("config.toml"),
-            auth: dir.join("auth.json"),
+            auth: Some(dir.join("auth.json")),
         };
         let token = "sk-yeapi-testkey";
         let applied = merge_config("", &spec(token)).unwrap();
@@ -624,9 +624,15 @@ experimental_bearer_token = "old-key"
         let applied_status = status(&paths, Some(&record), "http://127.0.0.1:8777/v1");
         assert!(applied_status.applied);
         assert!(!applied_status.drift);
-        assert!(applied_status.yeapi_provider_present);
+        assert!(applied_status
+            .codex
+            .as_ref()
+            .is_some_and(|detail| detail.yeapi_provider_present));
         assert_eq!(
-            applied_status.provider_token_hint.as_deref(),
+            applied_status
+                .codex
+                .as_ref()
+                .and_then(|detail| detail.provider_token_hint.as_deref()),
             Some("****tkey")
         );
         assert!(applied_status.base_url_matches);

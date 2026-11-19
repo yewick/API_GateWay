@@ -13,6 +13,8 @@ interface KeySourcePickerProps {
   keys: ApiKey[];
   keyId: string;
   onKeyIdChange: (id: string) => void;
+  namePlaceholder?: string;
+  nameHint?: string;
 }
 
 const maskKey = (key: string): string => {
@@ -28,6 +30,8 @@ export function KeySourcePicker({
   keys,
   keyId,
   onKeyIdChange,
+  namePlaceholder = "Codex",
+  nameHint = "接入时自动创建；明文只写入 Codex 配置，不在界面回显。",
 }: KeySourcePickerProps) {
   return (
     <div className="space-y-3">
@@ -45,8 +49,8 @@ export function KeySourcePicker({
           label="密钥名称"
           value={name}
           onChange={(event) => onNameChange(event.target.value)}
-          placeholder="Codex"
-          hint="接入时自动创建；明文只写入 Codex 配置，不在界面回显。"
+          placeholder={namePlaceholder}
+          hint={nameHint}
         />
       ) : keys.length === 0 ? (
         <p className="text-xs text-text-muted">

@@ -1,6 +1,6 @@
 //! 接入记录、备份与原子写。
 //!
-//! 记录里不存 API Key 明文，只存 Key id 与 sha256 指纹。
+//! 记录里不存 API Key 明文，只存 Key id、sha256 指纹与备份文件路径。
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -12,7 +12,7 @@ pub const STORE_FILE: &str = "client_setup.json";
 pub const BACKUP_DIR: &str = "client_setup_backups";
 const MAX_BACKUPS: usize = 5;
 
-/// 首次接入前用户配置里、我们准备接管的键的原始值。
+/// 首次接入前用户配置里、我们准备接管的键的原始值（Codex）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PreviousValues {
     #[serde(default)]
@@ -32,18 +32,73 @@ pub struct PreviousValues {
     pub config_existed: bool,
 }
 
+/// Claude Code `settings.json` 中受管 env 键的接入前快照。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ClaudePreviousValues {
+    #[serde(default)]
+    pub env: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub env_existed: bool,
+    #[serde(default)]
+    pub settings_existed: bool,
+}
+
+/// Claude 桌面端第三方推理档案的接入信息。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeDesktopRecord {
+    pub profile_id: String,
+    pub profile_name: String,
+    pub config_dir: String,
+    pub meta_path: String,
+    pub profile_path: String,
+    #[serde(default)]
+    pub previous_applied_id: Option<String>,
+    #[serde(default)]
+    pub previous_meta_existed: bool,
+    #[serde(default)]
+    pub previous_meta_backup: Option<String>,
+    #[serde(default)]
+    pub previous_profile_backup: Option<String>,
+    /// 接入前 `claude.desktop_aliases` 的值（网关模型路由别名）。
+    #[serde(default)]
+    pub previous_aliases: Option<serde_json::Value>,
+    #[serde(default)]
+    pub created_profile: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeRecordData {
+    pub previous: ClaudePreviousValues,
+    pub applied_models: super::ClaudeModelAliases,
+    /// 本次接入是否写入了 CLI 的 settings.json。
+    #[serde(default = "default_true")]
+    pub cli_applied: bool,
+    #[serde(default)]
+    pub desktop: Option<ClaudeDesktopRecord>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientRecord {
     pub applied_at: String,
-    pub codex_home: String,
+    #[serde(alias = "codex_home")]
+    pub config_home: String,
     pub config_path: String,
-    pub provider_id: String,
     pub base_url: String,
     pub model: String,
     pub api_key_id: String,
     pub key_fingerprint: String,
     #[serde(default)]
+    pub provider_id: String,
+    /// 仅 Codex 使用。
+    #[serde(default)]
     pub previous: PreviousValues,
+    /// 仅 Claude Code 使用。
+    #[serde(default)]
+    pub claude: Option<ClaudeRecordData>,
     #[serde(default)]
     pub backup_path: Option<String>,
 }
@@ -59,7 +114,7 @@ pub struct SetupStore {
 impl Default for SetupStore {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             clients: BTreeMap::new(),
         }
     }
@@ -91,7 +146,7 @@ pub fn save_store(app_data: &Path, store: &SetupStore) -> Result<(), String> {
     std::fs::create_dir_all(app_data).map_err(|err| format!("创建应用数据目录失败: {err}"))?;
     let bytes =
         serde_json::to_vec_pretty(store).map_err(|err| format!("序列化接入记录失败: {err}"))?;
-    atomic_write(&store_path(app_data), &bytes, 0o600)
+    atomic_write_secret(&store_path(app_data), &bytes)
 }
 
 pub fn read_optional(path: &Path) -> Result<Option<String>, String> {
@@ -114,6 +169,15 @@ pub fn fingerprint(token: &str) -> String {
 
 /// 原子写：同目录临时文件 → rename。Unix 新文件用给定权限，已有文件保持原权限。
 pub fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
+    atomic_write_impl(path, bytes, mode, false)
+}
+
+/// 写入含凭据的文件：无论原文件权限如何，都强制 0600。
+pub fn atomic_write_secret(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    atomic_write_impl(path, bytes, 0o600, true)
+}
+
+fn atomic_write_impl(path: &Path, bytes: &[u8], mode: u32, force_mode: bool) -> Result<(), String> {
     let dir = path
         .parent()
         .ok_or_else(|| format!("无效文件路径: {}", path.display()))?;
@@ -129,7 +193,11 @@ pub fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> 
         uuid::Uuid::new_v4().simple()
     ));
 
-    let effective_mode = existing_mode(path).unwrap_or(mode);
+    let effective_mode = if force_mode {
+        mode
+    } else {
+        existing_mode(path).unwrap_or(mode)
+    };
     let write_result = (|| -> std::io::Result<()> {
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
@@ -147,6 +215,13 @@ pub fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> 
     if let Err(err) = write_result {
         let _ = std::fs::remove_file(&tmp);
         return Err(format!("写入临时文件失败: {err}"));
+    }
+
+    #[cfg(unix)]
+    if force_mode {
+        // OpenOptions::mode 会被 umask 削弱，这里再显式收紧一次。
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode));
     }
 
     if let Err(err) = replace_file(&tmp, path) {
@@ -190,15 +265,29 @@ fn existing_mode(_path: &Path) -> Option<u32> {
     None
 }
 
-/// 备份 `config.toml` 到应用数据目录；只保留最近 `MAX_BACKUPS` 份。
-pub fn backup_config(config: &Path, app_data: &Path) -> Result<PathBuf, String> {
+/// 备份配置文件到应用数据目录；按 label + 扩展名分别保留最近 `MAX_BACKUPS` 份。
+///
+/// `label` 例如 `codex-config` / `claude-settings` / `claude-desktop-meta`。
+pub fn backup_file(source: &Path, app_data: &Path, label: &str) -> Result<PathBuf, String> {
     let dir = app_data.join(BACKUP_DIR);
     std::fs::create_dir_all(&dir)
         .map_err(|err| format!("创建备份目录 {} 失败: {err}", dir.display()))?;
 
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let dest = dir.join(format!("codex-config-{stamp}.toml"));
-    std::fs::copy(config, &dest).map_err(|err| format!("备份 {} 失败: {err}", config.display()))?;
+    let ext = source
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .unwrap_or_else(|| "bak".to_string());
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S-%3f");
+
+    let mut dest = dir.join(format!("{label}-{stamp}.{ext}"));
+    let mut counter = 1;
+    while dest.exists() {
+        dest = dir.join(format!("{label}-{stamp}-{counter}.{ext}"));
+        counter += 1;
+    }
+
+    std::fs::copy(source, &dest).map_err(|err| format!("备份 {} 失败: {err}", source.display()))?;
 
     #[cfg(unix)]
     {
@@ -206,21 +295,23 @@ pub fn backup_config(config: &Path, app_data: &Path) -> Result<PathBuf, String> 
         let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o600));
     }
 
-    prune_backups(&dir);
+    prune_backups(&dir, label, &ext);
     Ok(dest)
 }
 
-fn prune_backups(dir: &Path) {
+fn prune_backups(dir: &Path, label: &str, ext: &str) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
+    let prefix = format!("{label}-");
+    let suffix = format!(".{ext}");
     let mut backups: Vec<PathBuf> = entries
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| {
-            path.extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(&suffix))
         })
         .collect();
     if backups.len() <= MAX_BACKUPS {
@@ -260,6 +351,22 @@ mod tests {
         }
     }
 
+    fn codex_record() -> ClientRecord {
+        ClientRecord {
+            applied_at: "now".into(),
+            config_home: "/tmp/.codex".into(),
+            config_path: "/tmp/.codex/config.toml".into(),
+            base_url: "http://127.0.0.1:8777/v1".into(),
+            model: "m".into(),
+            api_key_id: "id".into(),
+            key_fingerprint: "fp".into(),
+            provider_id: "yeapi".into(),
+            previous: PreviousValues::default(),
+            claude: None,
+            backup_path: None,
+        }
+    }
+
     #[test]
     fn fingerprint_is_stable() {
         assert_eq!(fingerprint("sk-yeapi-x"), fingerprint("sk-yeapi-x"));
@@ -276,6 +383,20 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "a = 2\n");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_secret_forces_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        let file = dir.path().join("settings.json");
+        std::fs::write(&file, "{}").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        atomic_write_secret(&file, b"{\"a\":1}").unwrap();
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
     #[test]
     fn store_round_trip_and_missing_file() {
         let dir = TempDir::new();
@@ -283,21 +404,7 @@ mod tests {
         assert!(store.clients.is_empty());
 
         let mut store = SetupStore::default();
-        store.clients.insert(
-            "codex".to_string(),
-            ClientRecord {
-                applied_at: "now".into(),
-                codex_home: "/tmp/.codex".into(),
-                config_path: "/tmp/.codex/config.toml".into(),
-                provider_id: "yeapi".into(),
-                base_url: "http://127.0.0.1:8777/v1".into(),
-                model: "m".into(),
-                api_key_id: "id".into(),
-                key_fingerprint: "fp".into(),
-                previous: PreviousValues::default(),
-                backup_path: None,
-            },
-        );
+        store.clients.insert("codex".to_string(), codex_record());
         save_store(dir.path(), &store).unwrap();
 
         let loaded = load_store(dir.path()).unwrap();
@@ -306,20 +413,71 @@ mod tests {
     }
 
     #[test]
-    fn backup_keeps_latest_five() {
+    fn store_reads_legacy_codex_home_field() {
+        let dir = TempDir::new();
+        let legacy = serde_json::json!({
+            "version": 1,
+            "clients": {
+                "codex": {
+                    "applied_at": "now",
+                    "codex_home": "/tmp/.codex",
+                    "config_path": "/tmp/.codex/config.toml",
+                    "provider_id": "yeapi",
+                    "base_url": "http://127.0.0.1:8777/v1",
+                    "model": "m",
+                    "api_key_id": "id",
+                    "key_fingerprint": "fp",
+                    "previous": {},
+                    "backup_path": null
+                }
+            }
+        });
+        std::fs::write(
+            dir.path().join(STORE_FILE),
+            serde_json::to_vec_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = load_store(dir.path()).unwrap();
+        assert_eq!(loaded.clients["codex"].config_home, "/tmp/.codex");
+        assert!(loaded.clients["codex"].claude.is_none());
+    }
+
+    #[test]
+    fn backup_keeps_latest_five_per_label() {
         let dir = TempDir::new();
         let config = dir.path().join("config.toml");
         std::fs::write(&config, "a = 1\n").unwrap();
         for _ in 0..7 {
-            backup_config(&config, dir.path()).unwrap();
-            // 同一秒内可能重名，稍等以区分时间戳
+            backup_file(&config, dir.path(), "codex-config").unwrap();
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         let count = std::fs::read_dir(dir.path().join(BACKUP_DIR))
             .unwrap()
             .flatten()
-            .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("toml"))
+            .filter(|entry| {
+                entry.file_name().to_str().is_some_and(|name| {
+                    name.starts_with("codex-config-") && name.ends_with(".toml")
+                })
+            })
             .count();
         assert!(count <= MAX_BACKUPS);
+    }
+
+    #[test]
+    fn backup_labels_do_not_crowd_each_other() {
+        let dir = TempDir::new();
+        let config = dir.path().join("config.toml");
+        let settings = dir.path().join("settings.json");
+        std::fs::write(&config, "a = 1\n").unwrap();
+        std::fs::write(&settings, "{}").unwrap();
+        for _ in 0..5 {
+            backup_file(&config, dir.path(), "codex-config").unwrap();
+            backup_file(&settings, dir.path(), "claude-settings").unwrap();
+        }
+        let backups = std::fs::read_dir(dir.path().join(BACKUP_DIR))
+            .unwrap()
+            .count();
+        assert_eq!(backups, 10);
     }
 }
