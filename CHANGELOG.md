@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- 修复安全扫描误报：`tool.remote_script_exec` 改为检测真正的 `curl|wget … | bash/sh` 管道执行（排除 `||`），`network.tracking_pixel` 只匹配真实 1x1 图片 / 追踪 URL，`noreply@` 等系统邮箱不计入个人信息，Info 级重复发现每个规则最多保留 3 条；`off` / `audit` 模式不再被 `block_on_critical` 或自定义阻断规则升级为阻断。
+- 修复凭证检测漏报：密钥样式字符串紧跟在中文等非分隔文本之后（如「我的apikey是sk-…」）时不会被识别；改为边界感知的全文扫描，覆盖 `sk-` / `sk-ant-` / `Bearer` / JWT 等前缀。
 - 修复限额密钥在 Claude Code 等客户端下因单次 `max_tokens` 较大被误判为配额不足的问题：配额预检改为「估算请求输入 + 输出预算封顶」，把上游 `max_tokens` 收敛到剩余预算，仅在余额不足以覆盖输入与最小输出时返回 429；同时为 `/v1/messages`、`/v1/responses` 的拒绝路径补写失败日志。
 - 修复 `/v1/responses` 流式事件不符合 Responses 规范导致 Codex 丢弃文本 / 工具调用的问题：补齐 `response.output_item.added/done`、`response.content_part.added/done`、`response.output_text.done`、`response.function_call_arguments.done`，并在 `response.completed` 中回填完整文本与工具调用参数。
 - 修复 Responses 请求的 `input` 为字符串、或消息项省略 `type` 时被丢弃、上游报 `Empty input messages` 的问题。

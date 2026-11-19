@@ -107,7 +107,7 @@ function PolicySection() {
             </table>
           </div>
           {settings.security_block_on_critical && (
-            <p className="text-xs text-amber-400 mt-1">* block_on_critical 已开启，Critical 在任何模式下均强制阻断</p>
+            <p className="text-xs text-amber-400 mt-1">* block_on_critical 已开启，在 warn / redact / block 模式下 Critical 强制阻断（audit 只记录）</p>
           )}
           <p className="text-xs text-text-muted mt-1">当前模式高亮为蓝色</p>
         </div>

@@ -78,11 +78,11 @@ impl SecurityAction {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityFinding {
-    pub phase: String,           // request | response
-    pub category: String,        // credential | file | unicode | network | tool | prompt
-    pub rule_id: String,         // 如 credential.secret_token
+    pub phase: String,    // request | response
+    pub category: String, // credential | file | unicode | network | tool | prompt
+    pub rule_id: String,  // 如 credential.secret_token
     pub severity: RiskLevel,
-    pub action: String,          // warn | block（自定义规则 action 参与决策）
+    pub action: String, // warn | block（自定义规则 action 参与决策）
     pub title: String,
     pub description: String,
     pub location: String,        // JSON 路径，如 $.messages[0].content
@@ -120,16 +120,16 @@ impl Default for SecurityScanResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecuritySettings {
-    pub enabled: bool,            // 总开关
-    pub mode: String,             // audit | warn | redact | confirm | block
-    pub scan_request: bool,       // 扫描请求
-    pub scan_response: bool,      // 扫描响应
-    pub scan_unicode: bool,       // Unicode 隐写检测
-    pub scan_tools: bool,         // 工具/命令风险检测
-    pub scan_network: bool,       // 网络风险检测
-    pub redact_secrets: bool,     // 强制脱敏
-    pub block_on_critical: bool,  // Critical 强制阻断（无视 mode）
-    pub max_scan_bytes: usize,    // 单字段最大扫描字节数（性能保护）
+    pub enabled: bool,           // 总开关
+    pub mode: String,            // audit | warn | redact | confirm | block
+    pub scan_request: bool,      // 扫描请求
+    pub scan_response: bool,     // 扫描响应
+    pub scan_unicode: bool,      // Unicode 隐写检测
+    pub scan_tools: bool,        // 工具/命令风险检测
+    pub scan_network: bool,      // 网络风险检测
+    pub redact_secrets: bool,    // 强制脱敏
+    pub block_on_critical: bool, // Critical 强制阻断（warn/redact/block 模式；audit 只记录）
+    pub max_scan_bytes: usize,   // 单字段最大扫描字节数（性能保护）
 }
 
 // ---------- 内置规则模型 ----------
