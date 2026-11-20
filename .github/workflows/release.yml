@@ -80,3 +80,24 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      # Tauri 的 DMG 美化依赖 Finder/AppleScript，在 CI（CI=true）会被跳过，
+      # 产物没有图标位置布局。这里用仓库内的 .DS_Store 模板重建并覆盖上传。
+      - name: Restyle macOS DMG
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v${VERSION}"
+          DMG="$(ls src-tauri/target/release/bundle/dmg/*.dmg | head -1)"
+          bash scripts/restyle-dmg.sh "$DMG"
+          for attempt in 1 2 3 4 5; do
+            if gh release upload "$TAG" "$DMG" --clobber; then
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1

@@ -31,6 +31,7 @@
 - 修复 DeepSeek thinking 模型在工具调用轮次报 `reasoning_content must be passed back` 的问题：历史中存在 `tool_calls` 时，DeepSeek 适配器会对本次请求关闭 thinking；纯对话轮次不受影响。
 - 修复无 `call_id` 或对不上当前 `tool_calls` 的 `function_call_output`（例如 Codex app 工具输出）被写成孤立 `tool` 消息、上游报 `role 'tool' must be a response to a preceding message with 'tool_calls'` 的问题：无法关联的输出改为带标签的 user 文本。
 - 修复流式响应在等待上游首包期间不发送任何字节、导致客户端约 30 秒流超时（`stream disconnected before completion: error sending request`）的问题：新增立即发送和每 10 秒一次的 SSE keep-alive，并让流式上游请求不复用空闲连接。
+- 修复 macOS CI 构建的 DMG 缺少图标位置与卷图标布局的问题：发布流水线在 Tauri 打包后用仓库内的 `.DS_Store` 模板重建 DMG，不再依赖 Finder/AppleScript 权限。
 
 ## [0.1.6] - 2026-09-01
 
