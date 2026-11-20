@@ -117,7 +117,7 @@ pub fn build_models(models: &ClaudeModelAliases) -> Vec<Value> {
         }),
         json!({
             "name": ROUTE_FABLE,
-            "labelOverride": models.main,
+            "labelOverride": models.fable,
             "supports1m": true,
             "anthropicFamilyTier": "fable",
             "isFamilyDefault": true
@@ -131,7 +131,7 @@ pub fn alias_map(models: &ClaudeModelAliases) -> Value {
     map.insert(ROUTE_OPUS.to_string(), json!(models.opus));
     map.insert(ROUTE_SONNET.to_string(), json!(models.sonnet));
     map.insert(ROUTE_HAIKU.to_string(), json!(models.haiku));
-    map.insert(ROUTE_FABLE.to_string(), json!(models.main));
+    map.insert(ROUTE_FABLE.to_string(), json!(models.fable));
     Value::Object(map)
 }
 
@@ -516,6 +516,7 @@ mod tests {
             opus: "deepseek-v4-pro".into(),
             sonnet: "deepseek-v4-flash".into(),
             haiku: "deepseek-v4-flash".into(),
+            fable: "deepseek-v4-pro".into(),
         }
     }
 
@@ -580,6 +581,7 @@ mod tests {
             opus: "p".into(),
             sonnet: "s".into(),
             haiku: "h".into(),
+            fable: "f".into(),
         };
         let entries = build_models(&m);
         assert_eq!(entries.len(), 4);
@@ -595,7 +597,7 @@ mod tests {
             .iter()
             .filter_map(|entry| entry.get("labelOverride").and_then(Value::as_str))
             .collect();
-        assert_eq!(labels, vec!["p", "s", "h", "main-model"]);
+        assert_eq!(labels, vec!["p", "s", "h", "f"]);
         let tiers: Vec<&str> = entries
             .iter()
             .filter_map(|entry| entry.get("anthropicFamilyTier").and_then(Value::as_str))

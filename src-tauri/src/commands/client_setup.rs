@@ -679,8 +679,16 @@ pub async fn client_setup_disconnect(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
     client: String,
+    scope: Option<String>,
 ) -> Result<DisconnectClientResult, String> {
     let kind = ClientKind::parse(&client)?;
+    let scope = scope.unwrap_or_else(|| "all".to_string());
+    if !matches!(scope.as_str(), "all" | "cli" | "desktop") {
+        return Err(format!("不支持的断开范围: {scope}"));
+    }
+    if matches!(kind, ClientKind::Codex) && scope != "all" {
+        return Err("Codex 只支持整体断开".to_string());
+    }
 
     let app_data = client_setup::app_data_dir(&app)?;
     let paths = client_setup::resolve_paths(kind)?;
@@ -715,48 +723,84 @@ pub async fn client_setup_disconnect(
             }
         }
         ClientKind::Claude => {
-            let cli_applied = record
-                .claude
-                .as_ref()
-                .map(|claude| claude.cli_applied)
-                .unwrap_or(true);
-            if cli_applied {
-                if existing.trim().is_empty() {
-                    warnings.push("settings.json 不存在，未恢复 CLI 配置".to_string());
-                } else {
-                    let (restored, output) = claude_code::disconnect_settings(&existing, &record)?;
-                    if output.remove_settings_file {
-                        std::fs::remove_file(&paths.config).map_err(|err| {
-                            format!("删除 {} 失败: {err}", paths.config.display())
-                        })?;
+            let disconnect_cli = scope == "all" || scope == "cli";
+            let disconnect_desktop = scope == "all" || scope == "desktop";
+            let mut claude = record.claude.clone();
+
+            if disconnect_cli {
+                if claude
+                    .as_ref()
+                    .map(|data| data.cli_applied)
+                    .unwrap_or(true)
+                {
+                    if existing.trim().is_empty() {
+                        warnings.push("settings.json 不存在，未恢复 CLI 配置".to_string());
                     } else {
-                        setup_state::atomic_write_secret(&paths.config, restored.as_bytes())?;
+                        let (restored, output) =
+                            claude_code::disconnect_settings(&existing, &record)?;
+                        if output.remove_settings_file {
+                            std::fs::remove_file(&paths.config).map_err(|err| {
+                                format!("删除 {} 失败: {err}", paths.config.display())
+                            })?;
+                        } else {
+                            setup_state::atomic_write_secret(&paths.config, restored.as_bytes())?;
+                        }
+                        warnings.extend(output.warnings);
                     }
-                    warnings.extend(output.warnings);
+                }
+                if let Some(data) = claude.as_mut() {
+                    data.cli_applied = false;
                 }
             }
-            if let Some(desktop) = record
-                .claude
+
+            if disconnect_desktop {
+                if let Some(desktop) = claude
+                    .as_ref()
+                    .and_then(|data| data.desktop.as_ref())
+                    .cloned()
+                {
+                    match claude_desktop::disconnect(&desktop, &app_data) {
+                        Ok(mut desktop_warnings) => warnings.append(&mut desktop_warnings),
+                        Err(err) => warnings.push(format!("恢复 Claude 桌面端配置失败: {err}")),
+                    }
+                    if let Err(err) = restore_desktop_aliases(&app, &desktop.previous_aliases) {
+                        warnings.push(err);
+                    }
+                }
+                if let Some(data) = claude.as_mut() {
+                    data.desktop = None;
+                }
+            }
+
+            let still_cli = claude.as_ref().is_some_and(|data| data.cli_applied);
+            let still_desktop = claude
                 .as_ref()
-                .and_then(|claude| claude.desktop.as_ref())
-            {
-                match claude_desktop::disconnect(desktop, &app_data) {
-                    Ok(mut desktop_warnings) => warnings.append(&mut desktop_warnings),
-                    Err(err) => warnings.push(format!("恢复 Claude 桌面端配置失败: {err}")),
-                }
-                if let Err(err) = restore_desktop_aliases(&app, &desktop.previous_aliases) {
-                    warnings.push(err);
-                }
+                .and_then(|data| data.desktop.as_ref())
+                .is_some();
+            if still_cli || still_desktop {
+                // 只断开其中一个目标时保留记录，供另一个目标继续使用。
+                let mut updated = record.clone();
+                updated.claude = claude;
+                store
+                    .clients
+                    .insert(ClientKind::Claude.as_str().to_string(), updated);
+            } else {
+                store.clients.remove(ClientKind::Claude.as_str());
             }
-            store.clients.remove(ClientKind::Claude.as_str());
         }
     }
 
     setup_state::save_store(&app_data, &store)?;
 
     let gateway = gateway_for(kind, &app, state.inner()).await;
+    let status = status_for(
+        kind,
+        &paths,
+        store.clients.get(kind.as_str()),
+        &gateway,
+    );
     Ok(DisconnectClientResult {
-        status: status_for(kind, &paths, None, &gateway),
+        status,
         backup_path: record.backup_path.clone(),
         warnings,
     })

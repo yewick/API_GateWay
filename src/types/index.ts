@@ -434,6 +434,7 @@ export interface ClaudeEnvModels {
   opus: string | null;
   sonnet: string | null;
   haiku: string | null;
+  fable: string | null;
 }
 
 export interface ClaudeDesktopStatus {
@@ -456,6 +457,7 @@ export interface ClaudeStatusDetail {
   env_models: ClaudeEnvModels;
   top_level_model: string | null;
   anthropic_api_key_present: boolean;
+  cli_applied: boolean;
   desktop: ClaudeDesktopStatus;
 }
 
@@ -500,6 +502,7 @@ export interface ClaudeApplyOptions {
   opus_model?: string;
   sonnet_model?: string;
   haiku_model?: string;
+  fable_model?: string;
   apply_cli?: boolean;
   apply_desktop?: boolean;
 }
@@ -523,6 +526,8 @@ export interface DisconnectClientResult {
   backup_path: string | null;
   warnings: string[];
 }
+
+export type DisconnectScope = "all" | "cli" | "desktop";
 
 export interface ClientTestResult {
   ok: boolean;

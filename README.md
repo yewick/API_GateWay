@@ -302,14 +302,16 @@ curl http://127.0.0.1:8777/v1/models \
 
 在「客户端接入」页切到 **Claude Code** 标签。Claude Code 的 CLI 与 Claude 桌面端读取配置的位置不同，向导会按勾选的接入范围分别处理：
 
-- **CLI / 终端 / IDE**：在 `~/.claude/settings.json` 的 `env` 中增量写入 `ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`（网关根地址，Claude Code 自己拼 `/v1/messages`）、`ANTHROPIC_MODEL` 以及 `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` 与对应的 `_MODEL_NAME`；`enabledPlugins`、`theme`、`effortLevel` 等其余设置与键序保持不变。首次写入前会备份，断开时只恢复仍是 YeAPI 写入值的键。
+- **CLI / 终端 / IDE**：在 `~/.claude/settings.json` 的 `env` 中增量写入 `ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`（网关根地址，Claude Code 自己拼 `/v1/messages`）、`ANTHROPIC_MODEL` 以及 `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL` 与对应的 `_MODEL_NAME`；`enabledPlugins`、`theme`、`effortLevel` 等其余设置与键序保持不变。首次写入前会备份，断开时只恢复仍是 YeAPI 写入值的键。选择已有密钥时，模型下拉只显示该密钥允许的模型。
 - **Claude 桌面端**：桌面端不读取 settings.json 中的 `ANTHROPIC_*`，而是使用自身的第三方推理配置（`<user-data-dir>/configLibrary`）。向导会新建名为 `YeAPI` 的 gateway 档案并切换过去；档案中的模型名使用 Anthropic 风格的路由名（`claude-opus-5` / `claude-sonnet-5` / `claude-haiku-4-5` / `claude-fable-5`），界面显示 YeAPI 的实际模型，网关再按 `claude.desktop_aliases` 把路由名解析到真实模型。断开时会切回接入前的档案并移除该别名映射。该功能要求桌面端此前已启用过第三方推理（Help → Troubleshooting → 启用 Developer Mode → Developer → Configure Third-Party Inference）。
-- 别名映射留空时跟随默认模型；Haiku 映射同时用于会话标题等后台任务。
+- 别名映射留空时跟随默认模型；Haiku 映射同时用于会话标题等后台任务，Fable 对应 Claude Code 的 Fable 档位。
 - 接入后必须**完全退出并重开**：CLI 请结束 `claude` 进程并重开终端；桌面端使用 Cmd+Q 退出进程（关闭窗口不算），重启后在 Code 标签页新建会话生效。
 - 项目级 `.claude/settings.local.json` 或 `.claude/settings.json` 中的 `env` 优先级高于用户级设置（需先信任工作区），如项目内单独配置了 `ANTHROPIC_*` 会覆盖本向导写入的值。
 - 若同时使用 cc-switch 管理 Claude 桌面端，两套工具会互相切换推理档案；建议只保留一个工具接管。
 
 ### 9. 接入后保持可用（启动自检）
+
+「客户端接入」页按 **Codex CLI / Claude Code CLI / Claude Desktop** 三张目标卡片展示，顶部状态条显示当前接入目标与路由服务运行状态；每张卡片可单独测试、编辑、立即修复或断开，Claude 的 CLI 与桌面端互不影响。
 
 首次接入成功后，YeAPI 会在每次启动、网关重启和渠道变更后做一次自检，只在「配置仍由 YeAPI 持有」时幂等修复，不需要重跑向导：
 

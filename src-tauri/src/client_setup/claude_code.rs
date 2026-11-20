@@ -1,6 +1,6 @@
 //! Claude Code 配置（`~/.claude/settings.json`）的检测、合并与断开。
 //!
-//! 只维护顶层 `env` 中与 YeAPI 接入相关的 9 个键，其余设置与键序保持不变。
+//! 只维护顶层 `env` 中与 YeAPI 接入相关的 11 个键，其余设置与键序保持不变。
 
 use super::state::{self, ClaudePreviousValues, ClientRecord};
 use super::{
@@ -19,8 +19,10 @@ pub const HAIKU_MODEL_KEY: &str = "ANTHROPIC_DEFAULT_HAIKU_MODEL";
 pub const OPUS_NAME_KEY: &str = "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME";
 pub const SONNET_NAME_KEY: &str = "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME";
 pub const HAIKU_NAME_KEY: &str = "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME";
+pub const FABLE_MODEL_KEY: &str = "ANTHROPIC_DEFAULT_FABLE_MODEL";
+pub const FABLE_NAME_KEY: &str = "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME";
 
-pub const MANAGED_ENV_KEYS: [&str; 9] = [
+pub const MANAGED_ENV_KEYS: [&str; 11] = [
     AUTH_TOKEN_KEY,
     BASE_URL_KEY,
     MODEL_KEY,
@@ -30,6 +32,8 @@ pub const MANAGED_ENV_KEYS: [&str; 9] = [
     OPUS_NAME_KEY,
     SONNET_NAME_KEY,
     HAIKU_NAME_KEY,
+    FABLE_MODEL_KEY,
+    FABLE_NAME_KEY,
 ];
 
 pub struct SettingsSpec<'a> {
@@ -45,7 +49,7 @@ pub struct DisconnectOutput {
 }
 
 /// 接入时要写入的 `env` 键值。`_NAME` 键跟随对应模型 id，避免 ccswitch 旧显示名残留。
-pub fn managed_values(spec: &SettingsSpec<'_>) -> [(&'static str, String); 9] {
+pub fn managed_values(spec: &SettingsSpec<'_>) -> [(&'static str, String); 11] {
     [
         (AUTH_TOKEN_KEY, spec.api_key.to_string()),
         (BASE_URL_KEY, spec.base_url.to_string()),
@@ -56,6 +60,8 @@ pub fn managed_values(spec: &SettingsSpec<'_>) -> [(&'static str, String); 9] {
         (OPUS_NAME_KEY, spec.models.opus.clone()),
         (SONNET_NAME_KEY, spec.models.sonnet.clone()),
         (HAIKU_NAME_KEY, spec.models.haiku.clone()),
+        (FABLE_MODEL_KEY, spec.models.fable.clone()),
+        (FABLE_NAME_KEY, spec.models.fable.clone()),
     ]
 }
 
@@ -71,7 +77,7 @@ fn parse_root(existing: &str) -> Result<Value, String> {
     Ok(value)
 }
 
-/// 合并出新的 `settings.json` 文本。只改 `env` 下受管的 9 个键。
+/// 合并出新的 `settings.json` 文本。只改 `env` 下受管的 11 个键。
 pub fn merge_settings(existing: &str, spec: &SettingsSpec<'_>) -> Result<String, String> {
     let mut root = parse_root(existing)?;
 
@@ -199,6 +205,7 @@ pub fn status(
                 opus: env_string(OPUS_MODEL_KEY),
                 sonnet: env_string(SONNET_MODEL_KEY),
                 haiku: env_string(HAIKU_MODEL_KEY),
+                fable: env_string(FABLE_MODEL_KEY),
             },
             top_level_model: root
                 .as_ref()
@@ -207,6 +214,10 @@ pub fn status(
                 .map(str::to_string),
             anthropic_api_key_present: env
                 .map(|map| map.contains_key("ANTHROPIC_API_KEY"))
+                .unwrap_or(false),
+            cli_applied: record
+                .and_then(|record| record.claude.as_ref())
+                .map(|claude| claude.cli_applied)
                 .unwrap_or(false),
             desktop,
         }),
@@ -238,7 +249,7 @@ pub fn disconnect_settings(
             }
 
             let applied = &claude.applied_models;
-            let our_values: [(&str, &str); 8] = [
+            let our_values: [(&str, &str); 10] = [
                 (BASE_URL_KEY, record.base_url.as_str()),
                 (MODEL_KEY, applied.main.as_str()),
                 (OPUS_MODEL_KEY, applied.opus.as_str()),
@@ -247,6 +258,8 @@ pub fn disconnect_settings(
                 (OPUS_NAME_KEY, applied.opus.as_str()),
                 (SONNET_NAME_KEY, applied.sonnet.as_str()),
                 (HAIKU_NAME_KEY, applied.haiku.as_str()),
+                (FABLE_MODEL_KEY, applied.fable.as_str()),
+                (FABLE_NAME_KEY, applied.fable.as_str()),
             ];
             for (key, ours) in our_values {
                 let Some(current) = env.get(key) else {
@@ -301,6 +314,7 @@ mod tests {
             opus: "deepseek-v4-pro".into(),
             sonnet: "deepseek-v4-flash".into(),
             haiku: "deepseek-v4-flash".into(),
+            fable: "deepseek-v4-pro".into(),
         }
     }
 
@@ -367,6 +381,8 @@ mod tests {
         assert_eq!(value["env"][MODEL_KEY], "deepseek-v4-pro");
         assert_eq!(value["env"][OPUS_NAME_KEY], "deepseek-v4-pro");
         assert_eq!(value["env"][SONNET_NAME_KEY], "deepseek-v4-flash");
+        assert_eq!(value["env"][FABLE_MODEL_KEY], "deepseek-v4-pro");
+        assert_eq!(value["env"][FABLE_NAME_KEY], "deepseek-v4-pro");
 
         // 顶层键顺序保持不变（preserve_order）。
         let keys: Vec<&str> = value

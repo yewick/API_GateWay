@@ -57,7 +57,13 @@ export const useApplyClientSetup = () => {
 export const useDisconnectClientSetup = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (client: ClientKind) => clientSetupApi.disconnect(client),
+    mutationFn: ({
+      client,
+      scope,
+    }: {
+      client: ClientKind;
+      scope?: "all" | "cli" | "desktop";
+    }) => clientSetupApi.disconnect(client, scope),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: clientSetupKeys.all });
       qc.invalidateQueries({ queryKey: apiKeyKeys.all });

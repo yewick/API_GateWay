@@ -7,7 +7,7 @@ import type { Channel, CreateChannelInput, UpdateChannelInput, TestChannelResult
   IndexSummary, DocumentContent, UploadDocumentResult, ConversationMessage, KbChunkView,
   ServiceStatus, ClientKind, ClientSetupStatus, ApplyClientInput, ApplyClientResult,
   DisconnectClientResult, ClientTestResult, SetupModelOption, ClientSetupPreview,
-  ServerStatus, ReconcileReport } from "../types";
+  ServerStatus, ReconcileReport, DisconnectScope } from "../types";
 
 // 渠道管理 API
 export const channelApi = {
@@ -190,8 +190,8 @@ export const clientSetupApi = {
     invoke<ClientSetupPreview>("client_setup_preview", { input }),
   apply: (input: ApplyClientInput) =>
     invoke<ApplyClientResult>("client_setup_apply", { input }),
-  disconnect: (client: ClientKind) =>
-    invoke<DisconnectClientResult>("client_setup_disconnect", { client }),
+  disconnect: (client: ClientKind, scope?: DisconnectScope) =>
+    invoke<DisconnectClientResult>("client_setup_disconnect", { client, scope }),
   test: (client: ClientKind) =>
     invoke<ClientTestResult>("client_setup_test", { client }),
   openDir: (client: ClientKind) =>

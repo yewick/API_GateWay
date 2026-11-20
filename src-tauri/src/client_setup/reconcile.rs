@@ -464,6 +464,41 @@ pub async fn inspect(
                                     false,
                                 ));
                             }
+
+                            // 旧版接入缺少后来新增的模型档位（如 Fable）时自动补齐。
+                            if owned {
+                                if let (Some(env), Some(claude_data)) =
+                                    (claude_env(text), record.claude.as_ref())
+                                {
+                                    let expected = &claude_data.applied_models;
+                                    let env_str = |key: &str| {
+                                        env.get(key).and_then(Value::as_str)
+                                    };
+                                    let expected_pairs = [
+                                        (claude_code::MODEL_KEY, expected.main.as_str()),
+                                        (claude_code::OPUS_MODEL_KEY, expected.opus.as_str()),
+                                        (claude_code::SONNET_MODEL_KEY, expected.sonnet.as_str()),
+                                        (claude_code::HAIKU_MODEL_KEY, expected.haiku.as_str()),
+                                        (claude_code::OPUS_NAME_KEY, expected.opus.as_str()),
+                                        (claude_code::SONNET_NAME_KEY, expected.sonnet.as_str()),
+                                        (claude_code::HAIKU_NAME_KEY, expected.haiku.as_str()),
+                                        (claude_code::FABLE_MODEL_KEY, expected.fable.as_str()),
+                                        (claude_code::FABLE_NAME_KEY, expected.fable.as_str()),
+                                    ];
+                                    if expected_pairs
+                                        .iter()
+                                        .any(|(key, value)| env_str(key) != Some(*value))
+                                    {
+                                        issues.push(issue(
+                                            "models_stale",
+                                            "info",
+                                            "接入配置缺少新的模型档位（如 Fable），可自动补齐",
+                                            true,
+                                            false,
+                                        ));
+                                    }
+                                }
+                            }
                         }
                     },
                 }
@@ -530,6 +565,44 @@ pub async fn inspect(
             auto_fixable,
             ..key_issue
         });
+    }
+
+    // 记录里的模型可能因为渠道调整而不再可用：只提示，改模型需要用户决定。
+    let enabled = repo.get_enabled_channels().await.unwrap_or_default();
+    let available: Vec<String> = crate::server::handlers::collect_models(&enabled)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    let configured_models: Vec<String> = match kind {
+        ClientKind::Codex => vec![record.model.clone()],
+        ClientKind::Claude => record
+            .claude
+            .as_ref()
+            .map(|claude| claude.applied_models.distinct_models())
+            .unwrap_or_else(|| vec![record.model.clone()]),
+    };
+    let mut missing_models: Vec<String> = configured_models
+        .into_iter()
+        .filter(|model| {
+            !model.is_empty()
+                && !available
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(model))
+        })
+        .collect();
+    missing_models.sort();
+    missing_models.dedup();
+    if !missing_models.is_empty() {
+        issues.push(issue(
+            "model_unavailable",
+            "danger",
+            format!(
+                "接入使用的模型 {} 没有匹配的启用渠道，请编辑接入选择可用模型",
+                missing_models.join("、")
+            ),
+            false,
+            true,
+        ));
     }
 
     if let Ok(current) = client_setup::resolve_paths(kind) {
@@ -623,7 +696,41 @@ async fn reconcile_client(
     let inspection = inspect(app, state, kind, Some(&record)).await;
     let settings = repair_settings(app);
 
-    if settings.respect_external && inspection.external_conflict {
+    // 外部接管按目标分别判断：桌面端被 cc-switch 接管时，CLI 仍可自检修复。
+    let cli_conflict = inspection
+        .issues
+        .iter()
+        .any(|issue| issue.code == "external_conflict");
+    let desktop_conflict = inspection
+        .issues
+        .iter()
+        .any(|issue| issue.code == "desktop_not_active");
+    let (allow_cli, allow_desktop) = match kind {
+        ClientKind::Codex => (true, true),
+        ClientKind::Claude => (!cli_conflict, !desktop_conflict),
+    };
+    let has_applied_target = match kind {
+        ClientKind::Codex => true,
+        ClientKind::Claude => {
+            let cli = record
+                .claude
+                .as_ref()
+                .map(|claude| claude.cli_applied)
+                .unwrap_or(true);
+            let desktop = record
+                .claude
+                .as_ref()
+                .and_then(|claude| claude.desktop.as_ref())
+                .is_some();
+            cli || desktop
+        }
+    };
+
+    let blocked_external = match kind {
+        ClientKind::Codex => inspection.external_conflict,
+        ClientKind::Claude => has_applied_target && !allow_cli && !allow_desktop,
+    };
+    if settings.respect_external && blocked_external {
         return Ok(ClientReconcileResult {
             client: kind.as_str().to_string(),
             state: "conflict".to_string(),
@@ -722,6 +829,8 @@ async fn reconcile_client(
         gateway_ok,
         &gateway_codex,
         &gateway_origin,
+        allow_cli,
+        allow_desktop,
         &inspection,
         &app_data,
     )
@@ -791,6 +900,8 @@ async fn perform_writes(
     gateway_ok: bool,
     gateway_codex: &str,
     gateway_origin: &str,
+    allow_cli: bool,
+    allow_desktop: bool,
     inspection: &Inspection,
     app_data: &Path,
 ) -> Result<(Vec<String>, bool), String> {
@@ -884,10 +995,14 @@ async fn perform_writes(
                 .map(|claude| claude.applied_models.clone())
                 .unwrap_or_else(|| ClaudeModelAliases::resolve(&record.model, None));
 
-            let need_cli_write =
-                key_rotated || (gateway_ok && (address_changed || config_missing));
+            let need_cli_write = key_rotated
+                || inspection
+                    .issues
+                    .iter()
+                    .any(|issue| issue.code == "models_stale")
+                || (gateway_ok && (address_changed || config_missing));
 
-            if cli_applied && need_cli_write {
+            if cli_applied && allow_cli && need_cli_write {
                 let existing_text =
                     setup_state::read_optional(&inspection.paths.config)?.unwrap_or_default();
                 let owned_now = existing_text.is_empty() || claude_owned(&existing_text, ownership_fingerprint);
@@ -923,7 +1038,7 @@ async fn perform_writes(
                 .and_then(|claude| claude.desktop.clone())
             {
                 let applied = desktop_applied(record).unwrap_or(false);
-                if applied && (key_rotated || (gateway_ok && address_changed)) {
+                if allow_desktop && applied && (key_rotated || (gateway_ok && address_changed)) {
                     let base_url = target_base(gateway_origin);
                     let outcome = claude_desktop::apply(claude_desktop::ApplyInput {
                         dir: Path::new(&desktop.config_dir),
@@ -1072,5 +1187,13 @@ mod tests {
         assert!(!record.key_managed);
         assert!(!record.key_revoked);
         assert!(record.last_reconciled_at.is_none());
+        // 旧记录没有 fable 别名时回退主模型。
+        assert_eq!(
+            record
+                .claude
+                .as_ref()
+                .map(|claude| claude.applied_models.fable.as_str()),
+            Some("m")
+        );
     }
 }

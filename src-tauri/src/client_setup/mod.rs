@@ -135,6 +135,8 @@ pub struct ClaudeStatusDetail {
     pub env_models: ClaudeEnvModels,
     pub top_level_model: Option<String>,
     pub anthropic_api_key_present: bool,
+    /// 接入记录里 CLI 是否曾写入（区分「只接了桌面端」）。
+    pub cli_applied: bool,
     pub desktop: ClaudeDesktopStatus,
 }
 
@@ -143,6 +145,7 @@ pub struct ClaudeEnvModels {
     pub opus: Option<String>,
     pub sonnet: Option<String>,
     pub haiku: Option<String>,
+    pub fable: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -193,6 +196,8 @@ pub struct ClaudeApplyOptions {
     pub sonnet_model: Option<String>,
     #[serde(default)]
     pub haiku_model: Option<String>,
+    #[serde(default)]
+    pub fable_model: Option<String>,
     #[serde(default = "default_true")]
     pub apply_cli: bool,
     #[serde(default = "default_true")]
@@ -205,6 +210,7 @@ impl Default for ClaudeApplyOptions {
             opus_model: None,
             sonnet_model: None,
             haiku_model: None,
+            fable_model: None,
             apply_cli: true,
             apply_desktop: true,
         }
@@ -215,13 +221,48 @@ fn default_true() -> bool {
     true
 }
 
-/// Claude Code 的主模型与三个别名解析结果；空别名回退主模型。
+/// Claude Code 的主模型与四个别名解析结果；空别名回退主模型。
+/// 兼容旧记录：缺失的别名（例如升级前的 `fable`）反序列化时回退到主模型。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "ClaudeModelAliasesRaw")]
 pub struct ClaudeModelAliases {
     pub main: String,
     pub opus: String,
     pub sonnet: String,
     pub haiku: String,
+    pub fable: String,
+}
+
+#[derive(Deserialize)]
+struct ClaudeModelAliasesRaw {
+    main: String,
+    #[serde(default)]
+    opus: Option<String>,
+    #[serde(default)]
+    sonnet: Option<String>,
+    #[serde(default)]
+    haiku: Option<String>,
+    #[serde(default)]
+    fable: Option<String>,
+}
+
+impl From<ClaudeModelAliasesRaw> for ClaudeModelAliases {
+    fn from(raw: ClaudeModelAliasesRaw) -> Self {
+        let main = raw.main;
+        let fill = |value: Option<String>| {
+            value
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| main.clone())
+        };
+        Self {
+            opus: fill(raw.opus),
+            sonnet: fill(raw.sonnet),
+            haiku: fill(raw.haiku),
+            fable: fill(raw.fable),
+            main,
+        }
+    }
 }
 
 impl ClaudeModelAliases {
@@ -239,6 +280,7 @@ impl ClaudeModelAliases {
             opus: pick(options.and_then(|o| o.opus_model.as_ref())),
             sonnet: pick(options.and_then(|o| o.sonnet_model.as_ref())),
             haiku: pick(options.and_then(|o| o.haiku_model.as_ref())),
+            fable: pick(options.and_then(|o| o.fable_model.as_ref())),
         }
     }
 
@@ -249,6 +291,7 @@ impl ClaudeModelAliases {
             self.opus.clone(),
             self.sonnet.clone(),
             self.haiku.clone(),
+            self.fable.clone(),
         ];
         models.sort();
         models.dedup();
@@ -425,6 +468,7 @@ mod tests {
                 opus_model: Some(" ".to_string()),
                 sonnet_model: Some("deepseek-v4-flash".to_string()),
                 haiku_model: None,
+                fable_model: None,
                 apply_cli: true,
                 apply_desktop: true,
             }),
@@ -432,6 +476,7 @@ mod tests {
         assert_eq!(aliases.opus, "deepseek-v4-pro");
         assert_eq!(aliases.sonnet, "deepseek-v4-flash");
         assert_eq!(aliases.haiku, "deepseek-v4-pro");
+        assert_eq!(aliases.fable, "deepseek-v4-pro");
     }
 
     #[test]
