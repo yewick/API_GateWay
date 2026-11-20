@@ -17,6 +17,7 @@ import { clientSetupApi } from "../../lib/api";
 import { toast } from "../../lib/toast";
 import type { ApplyClientInput, ClientTestResult } from "../../types";
 import { ClaudeCodeSetupCard } from "./ClaudeCodeSetupCard";
+import { Notice } from "./SetupInfo";
 
 const aliasValue = (selection: string, custom: string) =>
   selection === "__custom__" ? custom.trim() : selection;
@@ -201,6 +202,16 @@ export function ClaudeSetupSection() {
 
   return (
     <>
+      {status.issues.length > 0 && (
+        <div className="space-y-2 mb-4">
+          {status.issues.map((item, index) => (
+            <Notice key={`${item.code}-${index}`} tone={item.severity}>
+              {item.message}
+            </Notice>
+          ))}
+        </div>
+      )}
+
       <ClaudeCodeSetupCard
         status={status}
         models={models}

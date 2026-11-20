@@ -186,6 +186,11 @@ pub fn status(
             .map(|record| record.base_url == gateway_origin)
             .unwrap_or(false),
         backup_path: record.and_then(|record| record.backup_path.clone()),
+        owned: false,
+        key_state: "unknown".to_string(),
+        external_conflict: false,
+        catalog_stale: false,
+        issues: Vec::new(),
         codex: None,
         claude: Some(ClaudeStatusDetail {
             env_present: env.is_some(),
@@ -329,6 +334,12 @@ mod tests {
                 desktop: None,
             }),
             backup_path: None,
+            key_managed: false,
+            key_name: None,
+            key_allowed_models: Vec::new(),
+            key_quota_limit: None,
+            key_revoked: false,
+            last_reconciled_at: None,
         }
     }
 

@@ -3,9 +3,10 @@
 //! 明文 API Key 只在 Rust 侧取用并写入客户端配置文件，不经过 IPC 回传前端。
 
 use crate::client_setup::{
-    self, claude_code, claude_desktop, codex, paths, state as setup_state, ApiKeySelection,
-    ApplyClientInput, ApplyClientResult, ClaudeModelAliases, ClientKind, ClientSetupStatus,
-    ClientTestResult, DesktopPreview, DisconnectClientResult, ModelOption, PreviewResult,
+    self, claude_code, claude_desktop, codex, paths, reconcile, state as setup_state,
+    ApiKeySelection, ApplyClientInput, ApplyClientResult, ClaudeModelAliases, ClientKind,
+    ClientSetupStatus, ClientTestResult, DesktopPreview, DisconnectClientResult, ModelOption,
+    PreviewResult,
 };
 use crate::db::models::CreateApiKeyInput;
 use crate::db::repository::Repository;
@@ -95,11 +96,20 @@ fn restore_desktop_aliases(
         .map_err(|err| format!("恢复模型路由别名失败: {err}"))
 }
 
+struct ResolvedKey {
+    id: String,
+    key: String,
+    created_new: bool,
+    name: String,
+    allowed_models: Vec<String>,
+    quota_limit: Option<i64>,
+}
+
 async fn resolve_api_key(
     repo: &Repository,
     key: &ApiKeySelection,
     default_name: &str,
-) -> Result<(String, String, bool), String> {
+) -> Result<ResolvedKey, String> {
     match key {
         ApiKeySelection::Existing { id } => {
             let key = repo
@@ -113,7 +123,14 @@ async fn resolve_api_key(
             {
                 return Err("所选密钥已过期".to_string());
             }
-            Ok((key.id, key.key, false))
+            Ok(ResolvedKey {
+                id: key.id,
+                key: key.key,
+                created_new: false,
+                name: key.name,
+                allowed_models: serde_json::from_str(&key.allowed_models).unwrap_or_default(),
+                quota_limit: Some(key.quota_limit),
+            })
         }
         ApiKeySelection::New {
             name,
@@ -128,7 +145,7 @@ async fn resolve_api_key(
             };
             let created = repo
                 .create_api_key(&CreateApiKeyInput {
-                    name,
+                    name: name.clone(),
                     allowed_models: allowed_models.clone(),
                     allowed_channels: Vec::new(),
                     quota_limit: Some(quota_limit.unwrap_or(-1)),
@@ -136,7 +153,14 @@ async fn resolve_api_key(
                 })
                 .await
                 .map_err(|err| format!("创建密钥失败: {err}"))?;
-            Ok((created.id, created.key, true))
+            Ok(ResolvedKey {
+                id: created.id,
+                key: created.key,
+                created_new: true,
+                name,
+                allowed_models: allowed_models.clone(),
+                quota_limit: Some(quota_limit.unwrap_or(-1)),
+            })
         }
     }
 }
@@ -191,6 +215,13 @@ pub async fn client_setup_status(
         let repo = Repository::new(state.db.pool.clone());
         status.applied_api_key_valid = applied_key_valid(&repo, record).await;
     }
+
+    let inspection = reconcile::inspect(&app, state.inner(), kind, record).await;
+    status.owned = inspection.owned;
+    status.key_state = inspection.key_state;
+    status.external_conflict = inspection.external_conflict;
+    status.catalog_stale = inspection.catalog_stale;
+    status.issues = inspection.issues;
 
     Ok(status)
 }
@@ -339,8 +370,11 @@ pub async fn client_setup_apply(
         return Err(warning);
     }
 
-    let (key_id, api_key, created_new_key) =
+    let resolved =
         resolve_api_key(&repo, &input.key, kind.default_key_name()).await?;
+    let key_id = resolved.id.clone();
+    let api_key = resolved.key.clone();
+    let created_new_key = resolved.created_new;
     let key_fingerprint = setup_state::fingerprint(&api_key);
 
     match kind {
@@ -428,6 +462,12 @@ pub async fn client_setup_apply(
                 previous,
                 claude: None,
                 backup_path: backup_path.clone(),
+                key_managed: created_new_key,
+                key_name: Some(resolved.name.clone()),
+                key_allowed_models: resolved.allowed_models.clone(),
+                key_quota_limit: resolved.quota_limit,
+                key_revoked: false,
+                last_reconciled_at: None,
             };
             store
                 .clients
@@ -445,6 +485,7 @@ pub async fn client_setup_apply(
                 status,
                 backup_path,
                 restart_required: true,
+                suggest_keep_alive: suggest_keep_alive(&app),
             })
         }
         ClientKind::Claude => {
@@ -574,6 +615,12 @@ pub async fn client_setup_apply(
                     desktop: desktop_record,
                 }),
                 backup_path: backup_path.clone(),
+                key_managed: created_new_key,
+                key_name: Some(resolved.name.clone()),
+                key_allowed_models: resolved.allowed_models.clone(),
+                key_quota_limit: resolved.quota_limit,
+                key_revoked: false,
+                last_reconciled_at: None,
             };
             store
                 .clients
@@ -591,9 +638,29 @@ pub async fn client_setup_apply(
                 status,
                 backup_path,
                 restart_required: true,
+                suggest_keep_alive: suggest_keep_alive(&app),
             })
         }
     }
+}
+
+/// 接入后只提示一次常驻建议；用户已关闭或已开启自启/托盘则不再打扰。
+fn suggest_keep_alive(app: &tauri::AppHandle) -> bool {
+    if client_setup::keep_alive_prompted(app) {
+        return false;
+    }
+    let Ok(store) = app.store("settings.json") else {
+        return false;
+    };
+    let auto_start = store
+        .get("ui.auto_start")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let close_to_tray = store
+        .get("ui.close_to_tray")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    !auto_start || !close_to_tray
 }
 
 async fn rollback_desktop(
@@ -808,8 +875,7 @@ pub async fn client_setup_test(
 }
 
 #[tauri::command]
-pub fn client_setup_open_dir(app: tauri::AppHandle, client: String) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
+pub fn client_setup_open_dir(app: tauri::AppHandle, client: String) -> Result<(), String> {    use tauri_plugin_opener::OpenerExt;
 
     let kind = ClientKind::parse(&client)?;
     let paths = client_setup::resolve_paths(kind)?;
@@ -825,6 +891,55 @@ pub fn client_setup_open_dir(app: tauri::AppHandle, client: String) -> Result<()
             .open_path(paths.home.to_string_lossy().to_string(), None::<&str>)
             .map_err(|err| format!("打开配置目录失败: {err}"))
     }
+}
+
+/// 立即自检 / 修复。`mode = "repair"` 允许轮换托管 Key；默认 Auto。
+#[tauri::command]
+pub async fn client_setup_reconcile(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    client: Option<String>,
+    mode: Option<String>,
+) -> Result<reconcile::ReconcileReport, String> {
+    let repair_mode = match mode.as_deref() {
+        Some("repair") => reconcile::RepairMode::Repair,
+        _ => reconcile::RepairMode::Auto,
+    };
+
+    let report = match client.as_deref() {
+        Some(raw) => {
+            let kind = ClientKind::parse(raw)?;
+            let result = reconcile::reconcile_one(&app, state.inner(), kind, repair_mode).await;
+            let gateway = client_setup::gateway_base_url(&app, state.inner()).await;
+            let gateway_ok = state
+                .server_running
+                .load(std::sync::atomic::Ordering::SeqCst);
+            let mut clients = std::collections::BTreeMap::new();
+            clients.insert(kind.as_str().to_string(), result);
+            reconcile::ReconcileReport {
+                ran_at: chrono::Utc::now().to_rfc3339(),
+                gateway,
+                gateway_ok,
+                clients,
+            }
+        }
+        None => reconcile::reconcile_all(&app, state.inner(), repair_mode).await,
+    };
+
+    *state.reconcile_report.write().await = Some(report.clone());
+    Ok(report)
+}
+
+#[tauri::command]
+pub async fn client_setup_last_report(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Option<reconcile::ReconcileReport>, String> {
+    Ok(state.reconcile_report.read().await.clone())
+}
+
+#[tauri::command]
+pub fn client_setup_dismiss_keep_alive_hint(app: tauri::AppHandle) -> Result<(), String> {
+    client_setup::mark_keep_alive_prompted(&app)
 }
 
 fn extract_response_text(text: &str) -> Option<String> {

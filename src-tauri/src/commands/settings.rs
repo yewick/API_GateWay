@@ -33,6 +33,10 @@ pub struct SettingsResponse {
     pub security_scan_response: bool,
     pub security_redact_secrets: bool,
     pub security_block_on_critical: bool,
+    /// 启动时自检并幂等修复客户端接入（Key 轮换、网关地址、模型目录）。
+    pub client_setup_auto_repair: bool,
+    /// 常驻提示是否已展示过（由客户端接入命令写入）。
+    pub client_setup_keep_alive_prompted: bool,
 }
 
 #[tauri::command]
@@ -109,6 +113,8 @@ pub async fn get_settings(
         security_scan_response: get_bool("security.scan_response", false),
         security_redact_secrets: get_bool("security.redact_secrets", true),
         security_block_on_critical: get_bool("security.block_on_critical", false),
+        client_setup_auto_repair: get_bool("client_setup.auto_repair", true),
+        client_setup_keep_alive_prompted: get_bool("client_setup.keep_alive_prompted", false),
     })
 }
 
@@ -138,6 +144,7 @@ pub struct SaveSettingsInput {
     pub security_scan_response: Option<bool>,
     pub security_redact_secrets: Option<bool>,
     pub security_block_on_critical: Option<bool>,
+    pub client_setup_auto_repair: Option<bool>,
 }
 
 #[tauri::command]
@@ -229,6 +236,9 @@ pub async fn save_settings(
     if let Some(v) = settings.security_block_on_critical {
         store.set("security.block_on_critical", serde_json::Value::Bool(v));
     }
+    if let Some(v) = settings.client_setup_auto_repair {
+        store.set("client_setup.auto_repair", serde_json::Value::Bool(v));
+    }
     store.save().map_err(|e| e.to_string())?;
 
     // 开机自启：仅当值变化时应用到操作系统（LaunchAgent / 注册表 / autostart.desktop）
@@ -243,4 +253,30 @@ pub async fn save_settings(
     }
 
     Ok(())
+}
+
+/// 启动时把系统登录项同步到 `ui.auto_start`。
+/// 开发构建跳过，避免把 debug 产物写进 LaunchAgent / 注册表。
+pub fn sync_autostart(app: &tauri::AppHandle) {
+    use tauri_plugin_autostart::ManagerExt;
+    use tauri_plugin_store::StoreExt;
+
+    if cfg!(debug_assertions) {
+        return;
+    }
+    let enabled = app
+        .store("settings.json")
+        .ok()
+        .and_then(|store| store.get("ui.auto_start"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let autostart = app.autolaunch();
+    let result = if enabled {
+        autostart.enable()
+    } else {
+        autostart.disable()
+    };
+    if let Err(err) = result {
+        tracing::warn!("同步开机自启失败: {err}");
+    }
 }

@@ -50,6 +50,7 @@ export const useSettingsStore = create<SettingsStore>()(
           }
         } catch (e) {
           console.warn("[settings] 后端保存失败，已保留本地设置", e);
+          throw e;
         }
       },
 

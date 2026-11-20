@@ -169,6 +169,8 @@ export const DEFAULT_SETTINGS = {
   security_scan_response: false,
   security_redact_secrets: true,
   security_block_on_critical: false,
+  client_setup_auto_repair: true,
+  client_setup_keep_alive_prompted: false,
 };
 
 // 时间格式化工具

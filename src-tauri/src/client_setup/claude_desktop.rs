@@ -737,6 +737,12 @@ mod tests {
                 desktop: Some(outcome.record.clone()),
             }),
             backup_path: None,
+            key_managed: false,
+            key_name: None,
+            key_allowed_models: Vec::new(),
+            key_quota_limit: None,
+            key_revoked: false,
+            last_reconciled_at: None,
         };
 
         let status = self::status(Some(dir.path()), Some(&record), "http://127.0.0.1:8777");

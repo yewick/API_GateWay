@@ -21,6 +21,11 @@ pub struct AppState {
     pub server_port: Arc<tokio::sync::RwLock<u16>>,
     pub server_running: Arc<AtomicBool>,
     pub server_handle: Arc<RwLock<Option<tauri::async_runtime::JoinHandle<()>>>>,
+    pub server_error: Arc<tokio::sync::RwLock<Option<server::ServerErrorInfo>>>,
+    pub server_started_at: Arc<tokio::sync::RwLock<Option<String>>>,
+    pub server_shutdown: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    pub reconcile_report:
+        Arc<tokio::sync::RwLock<Option<client_setup::reconcile::ReconcileReport>>>,
 }
 
 #[tauri::command]
@@ -30,7 +35,18 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // 单实例只在发布构建启用：tauri dev 热重启时旧进程可能尚未完全退出，
+    // 新实例会误判为双开并直接退出，导致 dev 会话中断。
+    let builder = if cfg!(debug_assertions) {
+        builder
+    } else {
+        builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            let _ = tray::restore_main_window(app);
+        }))
+    };
+
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_autostart::init(
@@ -64,6 +80,9 @@ pub fn run() {
             commands::client_setup::client_setup_disconnect,
             commands::client_setup::client_setup_test,
             commands::client_setup::client_setup_open_dir,
+            commands::client_setup::client_setup_reconcile,
+            commands::client_setup::client_setup_last_report,
+            commands::client_setup::client_setup_dismiss_keep_alive_hint,
             // 日志
             commands::logs::get_logs,
             commands::logs::get_log,
@@ -80,6 +99,7 @@ pub fn run() {
             commands::settings::save_settings,
             // 服务器
             commands::server::restart_server,
+            commands::server::server_status,
             // 安全规则
             commands::security::get_builtin_security_rules,
             commands::security::update_builtin_security_rule,
@@ -132,6 +152,10 @@ pub fn run() {
                     server_port: Arc::new(tokio::sync::RwLock::new(0)),
                     server_running: Arc::new(AtomicBool::new(false)),
                     server_handle: Arc::new(RwLock::new(None)),
+                    server_error: Arc::new(tokio::sync::RwLock::new(None)),
+                    server_started_at: Arc::new(tokio::sync::RwLock::new(None)),
+                    server_shutdown: Arc::new(tokio::sync::Mutex::new(None)),
+                    reconcile_report: Arc::new(tokio::sync::RwLock::new(None)),
                 });
 
                 handle.manage(state.clone());
@@ -140,13 +164,26 @@ pub fn run() {
                 tray::setup_tray(&handle)?;
                 tray::setup_window_events(&handle)?;
 
-                // 启动本地 HTTP 服务，并保存任务句柄以便重启
-                let state_for_server = state.clone();
-                let handle_for_server = handle.clone();
-                let join = tauri::async_runtime::spawn(async move {
-                    let _ = server::start_server(handle_for_server, state_for_server).await;
+                // 启动本地 HTTP 服务：先完成绑定再继续；失败会记录到状态并通知前端。
+                if let Err(err) = server::start(handle.clone(), state.clone()).await {
+                    tracing::error!("本地网关启动失败: {err}");
+                }
+
+                // 开机自启（仅 release 构建同步系统登录项，避免污染开发机）。
+                commands::settings::sync_autostart(&handle);
+
+                // 启动自检：幂等修复自己的客户端配置，不覆盖外部工具写入。
+                let reconcile_app = handle.clone();
+                let reconcile_state = state.clone();
+                tauri::async_runtime::spawn(async move {
+                    let report = client_setup::reconcile::reconcile_all(
+                        &reconcile_app,
+                        &reconcile_state,
+                        client_setup::reconcile::RepairMode::Auto,
+                    )
+                    .await;
+                    *reconcile_state.reconcile_report.write().await = Some(report);
                 });
-                *state.server_handle.write().unwrap() = Some(join);
 
                 Ok::<(), tauri::Error>(())
             })?;

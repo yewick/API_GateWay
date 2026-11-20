@@ -36,6 +36,9 @@ export const REAL_COMMANDS = new Set<string>([
   "client_setup_disconnect",
   "client_setup_test",
   "client_setup_open_dir",
+  "client_setup_reconcile",
+  "client_setup_last_report",
+  "client_setup_dismiss_keep_alive_hint",
   // 日志
   "get_logs",
   "get_log",
@@ -49,6 +52,7 @@ export const REAL_COMMANDS = new Set<string>([
   "save_settings",
   // 服务器
   "restart_server",
+  "server_status",
   // 安全规则
   "get_builtin_security_rules",
   "update_builtin_security_rule",
@@ -262,6 +266,23 @@ const emptyFallback = (cmd: string): Promise<any> => {
   // 客户端接入 → 后端不可用时的空结果
   if (cmd === "client_setup_status") {
     return Promise.resolve(null);
+  }
+  if (cmd === "client_setup_last_report") {
+    return Promise.resolve(null);
+  }
+  if (cmd === "client_setup_reconcile") {
+    return Promise.resolve({ ran_at: "", gateway: "", gateway_ok: false, clients: {} });
+  }
+  if (cmd === "server_status") {
+    return Promise.resolve({
+      running: false,
+      host: "127.0.0.1",
+      port: 8777,
+      actual_port: 0,
+      url: "",
+      started_at: null,
+      error: null,
+    });
   }
   if (cmd === "client_setup_list_models") {
     return Promise.resolve([]);

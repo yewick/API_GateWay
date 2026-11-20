@@ -17,6 +17,7 @@ import { clientSetupApi } from "../../lib/api";
 import { toast } from "../../lib/toast";
 import type { ApplyClientInput, ClientTestResult } from "../../types";
 import { CodexSetupCard } from "./CodexSetupCard";
+import { Notice } from "./SetupInfo";
 
 export function CodexSetupSection() {
   const { data: status, isLoading } = useClientSetupStatus("codex");
@@ -168,6 +169,16 @@ export function CodexSetupSection() {
 
   return (
     <>
+      {status.issues.length > 0 && (
+        <div className="space-y-2 mb-4">
+          {status.issues.map((item, index) => (
+            <Notice key={`${item.code}-${index}`} tone={item.severity}>
+              {item.message}
+            </Notice>
+          ))}
+        </div>
+      )}
+
       <CodexSetupCard
         status={status}
         models={models}

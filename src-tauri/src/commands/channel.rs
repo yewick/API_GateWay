@@ -1,9 +1,19 @@
 use tauri::State;
 use std::sync::Arc;
 use crate::AppState;
+use crate::client_setup::reconcile::{self, RepairMode};
 use crate::db::models::*;
 use crate::db::repository::Repository;
 use crate::adaptor::{get_adaptor, ChannelConfig, TestResult};
+
+/// 渠道变化后刷新 Codex 模型目录（自检只会重建「仍由 YeAPI 持有」的配置）。
+fn spawn_catalog_refresh(app: tauri::AppHandle, state: &State<'_, Arc<AppState>>) {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn(async move {
+        let report = reconcile::reconcile_all(&app, &state, RepairMode::Auto).await;
+        *state.reconcile_report.write().await = Some(report);
+    });
+}
 
 #[tauri::command]
 pub async fn get_channels(state: State<'_, Arc<AppState>>) -> Result<Vec<Channel>, String> {
@@ -13,11 +23,14 @@ pub async fn get_channels(state: State<'_, Arc<AppState>>) -> Result<Vec<Channel
 
 #[tauri::command]
 pub async fn create_channel(
+    app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
     input: CreateChannelInput,
 ) -> Result<Channel, String> {
     let repo = Repository::new(state.db.pool.clone());
-    repo.create_channel(&input).await.map_err(|e| e.to_string())
+    let channel = repo.create_channel(&input).await.map_err(|e| e.to_string())?;
+    spawn_catalog_refresh(app, &state);
+    Ok(channel)
 }
 
 #[tauri::command]
@@ -49,6 +62,7 @@ pub async fn test_channel(
 
 #[tauri::command]
 pub async fn toggle_channel(
+    app: tauri::AppHandle,
     id: String,
     status: i64,
     state: State<'_, Arc<AppState>>,
@@ -69,16 +83,20 @@ pub async fn toggle_channel(
     })
     .await
     .map_err(|e| e.to_string())?;
+    spawn_catalog_refresh(app, &state);
     Ok(())
 }
 
 #[tauri::command]
 pub async fn delete_channel(
+    app: tauri::AppHandle,
     id: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     let repo = Repository::new(state.db.pool.clone());
-    repo.delete_channel(&id).await.map_err(|e| e.to_string())
+    repo.delete_channel(&id).await.map_err(|e| e.to_string())?;
+    spawn_catalog_refresh(app, &state);
+    Ok(())
 }
 
 #[tauri::command]
@@ -92,11 +110,14 @@ pub async fn get_channel(
 
 #[tauri::command]
 pub async fn update_channel(
+    app: tauri::AppHandle,
     input: UpdateChannelInput,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Channel, String> {
     let repo = Repository::new(state.db.pool.clone());
-    repo.update_channel(&input).await.map_err(|e| e.to_string())
+    let channel = repo.update_channel(&input).await.map_err(|e| e.to_string())?;
+    spawn_catalog_refresh(app, &state);
+    Ok(channel)
 }
 
 #[tauri::command]

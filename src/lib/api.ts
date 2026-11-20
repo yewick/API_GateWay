@@ -6,7 +6,8 @@ import type { Channel, CreateChannelInput, UpdateChannelInput, TestChannelResult
   SearchResult, RagAnswer, CreateKbInput, UpdateKbInput, ImportSourceInput,
   IndexSummary, DocumentContent, UploadDocumentResult, ConversationMessage, KbChunkView,
   ServiceStatus, ClientKind, ClientSetupStatus, ApplyClientInput, ApplyClientResult,
-  DisconnectClientResult, ClientTestResult, SetupModelOption, ClientSetupPreview } from "../types";
+  DisconnectClientResult, ClientTestResult, SetupModelOption, ClientSetupPreview,
+  ServerStatus, ReconcileReport } from "../types";
 
 // 渠道管理 API
 export const channelApi = {
@@ -64,7 +65,13 @@ export const statsApi = {
 export const settingsApi = {
   get: () => invoke<Settings>("get_settings"),
   save: (settings: Settings) => invoke<void>("save_settings", { settings }),
-  restartServer: () => invoke<void>("restart_server"),
+  restartServer: () => invoke<ServerStatus>("restart_server"),
+};
+
+// 本地网关状态
+export const serverApi = {
+  status: () => invoke<ServerStatus>("server_status"),
+  restart: () => invoke<ServerStatus>("restart_server"),
 };
 
 // 安全规则 API
@@ -189,4 +196,9 @@ export const clientSetupApi = {
     invoke<ClientTestResult>("client_setup_test", { client }),
   openDir: (client: ClientKind) =>
     invoke<void>("client_setup_open_dir", { client }),
+  reconcile: (client?: ClientKind, mode?: "auto" | "repair") =>
+    invoke<ReconcileReport>("client_setup_reconcile", { client, mode }),
+  lastReport: () => invoke<ReconcileReport | null>("client_setup_last_report"),
+  dismissKeepAliveHint: () =>
+    invoke<void>("client_setup_dismiss_keep_alive_hint"),
 };

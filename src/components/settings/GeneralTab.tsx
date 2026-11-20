@@ -32,6 +32,21 @@ export function GeneralTab() {
           description="系统启动时自动运行 YeAPI"
         />
       </div>
+
+      <div>
+        <h4 className="text-sm font-semibold text-text-primary mb-1">客户端接入</h4>
+        <p className="text-xs text-text-muted mb-4">
+          网关停止后，已接入的 Codex / Claude Code 将无法连接，建议保持 YeAPI 常驻。
+        </p>
+        <div className="bg-bg-tertiary/50 rounded-lg p-4">
+          <Toggle
+            checked={settings.client_setup_auto_repair}
+            onChange={(v) => updateSettings({ client_setup_auto_repair: v })}
+            label="启动时自动修复客户端接入"
+            description="自动更新网关地址、重建 Codex 模型目录、轮换失效的托管密钥；不会覆盖其他工具（如 cc-switch）写入的配置"
+          />
+        </div>
+      </div>
     </div>
   );
 }

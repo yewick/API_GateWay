@@ -222,6 +222,11 @@ pub fn status(
             .map(|record| record.base_url == gateway_base_url)
             .unwrap_or(false),
         backup_path: record.and_then(|record| record.backup_path.clone()),
+        owned: false,
+        key_state: "unknown".to_string(),
+        external_conflict: false,
+        catalog_stale: false,
+        issues: Vec::new(),
         codex: Some(CodexStatusDetail {
             auth_path,
             auth_logged_in,
@@ -451,6 +456,12 @@ mod tests {
             previous,
             claude: None,
             backup_path: None,
+            key_managed: false,
+            key_name: None,
+            key_allowed_models: Vec::new(),
+            key_quota_limit: None,
+            key_revoked: false,
+            last_reconciled_at: None,
         }
     }
 

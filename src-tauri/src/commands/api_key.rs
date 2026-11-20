@@ -80,9 +80,13 @@ pub async fn update_api_key(
 
 #[tauri::command]
 pub async fn delete_api_key(
+    app: tauri::AppHandle,
     id: String,
     state: tauri::State<'_, std::sync::Arc<AppState>>,
 ) -> Result<(), String> {
     let repo = Repository::new(state.db.pool.clone());
-    repo.delete_api_key(&id).await.map_err(|e| e.to_string())
+    repo.delete_api_key(&id).await.map_err(|e| e.to_string())?;
+    // 留下墓碑：客户端自检不会把用户主动删除的 Key 自动重建。
+    let _ = crate::client_setup::state::mark_key_revoked(&app, &id);
+    Ok(())
 }

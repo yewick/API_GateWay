@@ -101,6 +101,20 @@ pub struct ClientRecord {
     pub claude: Option<ClaudeRecordData>,
     #[serde(default)]
     pub backup_path: Option<String>,
+    /// 接入时 Key 是否由向导新建（可安全自动轮换）。
+    #[serde(default)]
+    pub key_managed: bool,
+    #[serde(default)]
+    pub key_name: Option<String>,
+    #[serde(default)]
+    pub key_allowed_models: Vec<String>,
+    #[serde(default)]
+    pub key_quota_limit: Option<i64>,
+    /// 用户在 YeAPI 里主动删除了该 Key：绝不自动复活。
+    #[serde(default)]
+    pub key_revoked: bool,
+    #[serde(default)]
+    pub last_reconciled_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -147,6 +161,27 @@ pub fn save_store(app_data: &Path, store: &SetupStore) -> Result<(), String> {
     let bytes =
         serde_json::to_vec_pretty(store).map_err(|err| format!("序列化接入记录失败: {err}"))?;
     atomic_write_secret(&store_path(app_data), &bytes)
+}
+
+/// 用户在 YeAPI 里删除 Key 后留下墓碑：自检不会自动轮换被主动撤销的 Key。
+pub fn mark_key_revoked(app: &tauri::AppHandle, key_id: &str) -> Result<(), String> {
+    use tauri::Manager;
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| format!("无法获取应用数据目录: {err}"))?;
+    let mut store = load_store(&app_data)?;
+    let mut changed = false;
+    for record in store.clients.values_mut() {
+        if record.api_key_id == key_id {
+            record.key_revoked = true;
+            changed = true;
+        }
+    }
+    if changed {
+        save_store(&app_data, &store)?;
+    }
+    Ok(())
 }
 
 pub fn read_optional(path: &Path) -> Result<Option<String>, String> {
@@ -364,6 +399,12 @@ mod tests {
             previous: PreviousValues::default(),
             claude: None,
             backup_path: None,
+            key_managed: false,
+            key_name: None,
+            key_allowed_models: Vec::new(),
+            key_quota_limit: None,
+            key_revoked: false,
+            last_reconciled_at: None,
         }
     }
 

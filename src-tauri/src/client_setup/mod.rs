@@ -6,11 +6,13 @@ pub mod claude_code;
 pub mod claude_desktop;
 pub mod codex;
 pub mod paths;
+pub mod reconcile;
 pub mod state;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::Manager;
+use tauri_plugin_store::StoreExt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -69,6 +71,17 @@ pub fn resolve_paths(kind: ClientKind) -> Result<ClientPaths, String> {
 /// 串行化 apply / disconnect，避免两个入口同时改同一份配置。
 pub static SETUP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// 接入自检发现的问题。`code` 供前端做分支判断，`message` 直接展示。
+#[derive(Debug, Clone, Serialize)]
+pub struct ClientIssue {
+    pub code: String,
+    /// info | warning | danger
+    pub severity: String,
+    pub message: String,
+    pub auto_fixable: bool,
+    pub requires_confirm: bool,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ClientSetupStatus {
     pub client: String,
@@ -88,6 +101,15 @@ pub struct ClientSetupStatus {
     pub gateway_base_url: String,
     pub base_url_matches: bool,
     pub backup_path: Option<String>,
+    /// 配置仍由 YeAPI 写入并持有（只看 token 指纹 / provider，不看 base_url）。
+    pub owned: bool,
+    /// ok | missing | disabled | expired | revoked | unknown
+    pub key_state: String,
+    /// 配置已被 cc-switch 等外部工具改写。
+    pub external_conflict: bool,
+    /// Codex 模型目录缺失或与当前启用渠道不一致。
+    pub catalog_stale: bool,
+    pub issues: Vec<ClientIssue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codex: Option<CodexStatusDetail>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -239,6 +261,8 @@ pub struct ApplyClientResult {
     pub status: ClientSetupStatus,
     pub backup_path: Option<String>,
     pub restart_required: bool,
+    /// 首次接入后提示一次「登录自启 / 关闭到托盘」，避免网关随窗口退出。
+    pub suggest_keep_alive: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -318,6 +342,28 @@ pub(crate) fn key_hint(token: &str) -> String {
     }
     let tail: String = token.chars().skip(count - 4).collect();
     format!("****{tail}")
+}
+
+/// 常驻提示只出现一次：用户关闭后落库，不再打扰。
+pub fn keep_alive_prompted(app: &tauri::AppHandle) -> bool {
+    app.store("settings.json")
+        .ok()
+        .and_then(|store| store.get("client_setup.keep_alive_prompted"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+pub fn mark_keep_alive_prompted(app: &tauri::AppHandle) -> Result<(), String> {
+    let store = app
+        .store("settings.json")
+        .map_err(|err| format!("打开设置存储失败: {err}"))?;
+    store.set(
+        "client_setup.keep_alive_prompted",
+        serde_json::Value::Bool(true),
+    );
+    store
+        .save()
+        .map_err(|err| format!("保存常驻提示状态失败: {err}"))
 }
 
 #[cfg(test)]

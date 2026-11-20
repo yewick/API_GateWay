@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { clientSetupApi } from "../lib/api";
 import type { ApplyClientInput, ClientKind } from "../types";
@@ -24,6 +25,7 @@ export const useClientSetupStatus = (client: ClientKind) =>
   useQuery({
     queryKey: clientSetupKeys.status(client),
     queryFn: () => clientSetupApi.status(client),
+    refetchInterval: 15_000,
   });
 
 export const useClientSetupModels = () =>
@@ -68,3 +70,48 @@ export const useTestClientSetup = () =>
   useMutation({
     mutationFn: (client: ClientKind) => clientSetupApi.test(client),
   });
+
+export const useReconcileClientSetup = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      client,
+      mode,
+    }: {
+      client?: ClientKind;
+      mode?: "auto" | "repair";
+    }) => clientSetupApi.reconcile(client, mode),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: clientSetupKeys.all });
+      qc.invalidateQueries({ queryKey: apiKeyKeys.all });
+    },
+  });
+};
+
+/// 后端自检完成后刷新接入状态（启动、重启网关、渠道变化都会触发）。
+export const useClientSetupEvents = () => {
+  const qc = useQueryClient();
+  useEffect(() => {
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+      return;
+    }
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen("client-setup-reconciled", () => {
+          qc.invalidateQueries({ queryKey: clientSetupKeys.all });
+          qc.invalidateQueries({ queryKey: apiKeyKeys.all });
+        }),
+      )
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [qc]);
+};

@@ -98,6 +98,8 @@ export interface Settings {
   security_scan_response: boolean;
   security_redact_secrets: boolean;
   security_block_on_critical: boolean;
+  client_setup_auto_repair: boolean;
+  client_setup_keep_alive_prompted: boolean;
 }
 
 export interface CreateChannelInput {
@@ -409,6 +411,14 @@ export interface ServiceStatus {
 
 export type ClientKind = "codex" | "claude";
 
+export interface ClientIssue {
+  code: string;
+  severity: "info" | "warning" | "danger";
+  message: string;
+  auto_fixable: boolean;
+  requires_confirm: boolean;
+}
+
 export interface CodexStatusDetail {
   auth_path: string;
   auth_logged_in: boolean;
@@ -467,6 +477,11 @@ export interface ClientSetupStatus {
   gateway_base_url: string;
   base_url_matches: boolean;
   backup_path: string | null;
+  owned: boolean;
+  key_state: "ok" | "missing" | "disabled" | "expired" | "revoked" | "unknown";
+  external_conflict: boolean;
+  catalog_stale: boolean;
+  issues: ClientIssue[];
   codex?: CodexStatusDetail;
   claude?: ClaudeStatusDetail;
 }
@@ -500,6 +515,7 @@ export interface ApplyClientResult {
   status: ClientSetupStatus;
   backup_path: string | null;
   restart_required: boolean;
+  suggest_keep_alive: boolean;
 }
 
 export interface DisconnectClientResult {
@@ -531,4 +547,36 @@ export interface ClientSetupPreview {
   snippet: string;
   warning: string | null;
   desktop?: DesktopPreview;
+}
+
+// ===== 网关状态与接入自检 =====
+
+export interface ServerErrorInfo {
+  kind: "bind" | "serve" | string;
+  message: string;
+  at: string;
+}
+
+export interface ServerStatus {
+  running: boolean;
+  host: string;
+  port: number;
+  actual_port: number;
+  url: string;
+  started_at: string | null;
+  error: ServerErrorInfo | null;
+}
+
+export interface ClientReconcileResult {
+  client: ClientKind;
+  state: "applied" | "repaired" | "conflict" | "needs_action" | "not_applied" | "error";
+  actions: string[];
+  issues: ClientIssue[];
+}
+
+export interface ReconcileReport {
+  ran_at: string;
+  gateway: string;
+  gateway_ok: boolean;
+  clients: Partial<Record<ClientKind, ClientReconcileResult>>;
 }

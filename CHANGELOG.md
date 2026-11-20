@@ -8,6 +8,9 @@
 
 ### Added
 
+- **客户端接入启动自检（开箱即用）**：应用启动、网关重启与渠道变更后自动检查客户端配置，只在「配置仍由 YeAPI 持有」时幂等修复——端口/地址变化自动改写 Codex、Claude Code 与桌面端的 base_url，Codex 模型目录缺失或过期时自动重建，向导新建的托管密钥丢失/过期时自动轮换并重写配置；在密钥页主动删除的 Key 会留下墓碑，不会被自动复活。检测到 cc-switch 等外部工具改写配置时只提示，不自动覆盖，需点「重新接入」手动接管（先备份）。
+- **网关状态可见**：新增 `server_status` 命令与 `server-status-changed` 事件；绑定失败不再静默，页面顶部会显示错误与「重试」。网关改为先完成绑定再启动、优雅停止后重启，并加入单实例插件避免双开抢端口。
+- **常驻提示**：首次接入后提示一次「关闭到托盘 / 开机自启」，默认不勾选、可在设置中调整；新增「设置 → 通用设置 → 客户端接入 → 启动时自动修复」开关。
 - **客户端接入向导（Codex）**：新增「客户端接入」页面，可新建 / 选择 YeAPI 密钥并一键写入 `~/.codex/config.toml`（专用 `yeapi` provider、`responses` 协议、`experimental_bearer_token`），无需登录 OpenAI 账号。支持配置预览、连接测试、断开恢复与首次写入前备份；不修改 `auth.json`，并按本机 ChatGPT 登录态自动设置 `requires_openai_auth`。接入前校验模型是否命中启用渠道，并生成 `yeapi-model-catalog.json` 供 Codex 模型菜单使用。
 - **客户端接入向导（Claude Code）**：在「客户端接入」页新增 Claude Code 标签，可同时接入 Claude Code CLI 与 Claude 桌面端。CLI 侧增量维护 `~/.claude/settings.json` 的 `env`（`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`、`ANTHROPIC_MODEL` 及 Opus / Sonnet / Haiku 别名），保留其余设置与键序；桌面端侧新建并切换名为 `YeAPI` 的第三方推理档案，断开时恢复原档案。支持配置预览、Anthropic `/v1/messages` 连接测试、断开恢复与首次写入前备份。
 
