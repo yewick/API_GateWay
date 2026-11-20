@@ -3,6 +3,7 @@ use crate::core::dispatcher::Dispatcher;
 use crate::db::models::{Channel, RequestLog};
 use crate::db::repository::Repository;
 use crate::security::{self, SecurityAction};
+use crate::server::session_identity::SessionMeta;
 use crate::utils;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -16,9 +17,11 @@ pub struct ProxyResult {
     pub usage: Option<TokenUsage>,
     pub channel: Channel,
     pub duration_ms: u64,
+    pub log_id: String,
 }
 
 /// 核心转发：鉴权、安全扫描、渠道调度、故障转移、日志与配额
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_request(
     repo: &Arc<Repository>,
     app: &AppHandle,
@@ -29,6 +32,7 @@ pub async fn handle_request(
     request_body: Option<String>,
     trace_id: Option<String>,
     mode: &str,
+    session: &SessionMeta,
 ) -> Result<ProxyResult, (u16, String)> {
     let start = Instant::now();
     let model = body
@@ -71,7 +75,7 @@ pub async fn handle_request(
 
     // 策略判定为阻断：记录日志后返回 451
     if matches!(security_result.action, SecurityAction::Block) {
-        let log = RequestLog {
+        let mut log = RequestLog {
             id: utils::id::new_id(),
             seq: None,
             api_key_id: Some(api_key_id.to_string()),
@@ -100,7 +104,16 @@ pub async fn handle_request(
             security_action: security_result.action.as_str().to_string(),
             sanitized: if security_result.sanitized { 1 } else { 0 },
             blocked_reason: security_result.blocked_reason.clone(),
+            response_body: None,
+            session_key: None,
+            client_session_id: None,
+            session_source: "none".to_string(),
+            session_client: None,
+            session_title: None,
+            request_kind: "turn".to_string(),
+            history_len: None,
         };
+        session.apply(&mut log);
         let log_id = log.id.clone();
         let _ = repo.create_log(&log).await;
         let _ = repo
@@ -126,6 +139,7 @@ pub async fn handle_request(
             is_stream,
             request_body.as_deref(),
             trace_id.as_deref(),
+            session,
             start.elapsed().as_millis() as i64,
         )
         .await;
@@ -145,6 +159,7 @@ pub async fn handle_request(
             is_stream,
             request_body.as_deref(),
             trace_id.as_deref(),
+            session,
             start.elapsed().as_millis() as i64,
         )
         .await;
@@ -210,7 +225,7 @@ pub async fn handle_request(
                     }
                 }
 
-                let log = RequestLog {
+                let mut log = RequestLog {
                     id: utils::id::new_id(),
                     seq: None,
                     api_key_id: Some(api_key_id.to_string()),
@@ -247,7 +262,16 @@ pub async fn handle_request(
                     security_action: security_result.action.as_str().to_string(),
                     sanitized: if security_result.sanitized { 1 } else { 0 },
                     blocked_reason: security_result.blocked_reason.clone(),
+                    response_body: None,
+                    session_key: None,
+                    client_session_id: None,
+                    session_source: "none".to_string(),
+                    session_client: None,
+                    session_title: None,
+                    request_kind: "turn".to_string(),
+                    history_len: None,
                 };
+                session.apply(&mut log);
                 let log_id = log.id.clone();
                 let _ = repo.create_log(&log).await;
                 let _ = repo
@@ -265,11 +289,12 @@ pub async fn handle_request(
                     usage,
                     channel,
                     duration_ms: start.elapsed().as_millis() as u64,
+                    log_id,
                 });
             }
             Err(e) => {
                 let error_message = e.to_string();
-                let log = RequestLog {
+                let mut log = RequestLog {
                     id: utils::id::new_id(),
                     seq: None,
                     api_key_id: Some(api_key_id.to_string()),
@@ -306,7 +331,16 @@ pub async fn handle_request(
                     security_action: security_result.action.as_str().to_string(),
                     sanitized: if security_result.sanitized { 1 } else { 0 },
                     blocked_reason: security_result.blocked_reason.clone(),
+                    response_body: None,
+                    session_key: None,
+                    client_session_id: None,
+                    session_source: "none".to_string(),
+                    session_client: None,
+                    session_title: None,
+                    request_kind: "turn".to_string(),
+                    history_len: None,
                 };
+                session.apply(&mut log);
                 let log_id = log.id.clone();
                 let _ = repo.create_log(&log).await;
                 let _ = repo
@@ -329,6 +363,7 @@ pub async fn handle_request(
 }
 
 /// 写一条「无可用渠道」失败日志（503），失败不影响响应（静默吞错）。
+#[allow(clippy::too_many_arguments)]
 async fn write_no_channel_log(
     repo: &Arc<Repository>,
     api_key_id: &str,
@@ -340,9 +375,10 @@ async fn write_no_channel_log(
     is_stream: bool,
     request_body: Option<&str>,
     trace_id: Option<&str>,
+    session: &SessionMeta,
     duration_ms: i64,
 ) {
-    let log = RequestLog {
+    let mut log = RequestLog {
         id: utils::id::new_id(),
         seq: None,
         api_key_id: Some(api_key_id.to_string()),
@@ -371,7 +407,16 @@ async fn write_no_channel_log(
         security_action: "none".to_string(),
         sanitized: 0,
         blocked_reason: None,
+        response_body: None,
+        session_key: None,
+        client_session_id: None,
+        session_source: "none".to_string(),
+        session_client: None,
+        session_title: None,
+        request_kind: "turn".to_string(),
+        history_len: None,
     };
+    session.apply(&mut log);
     let _ = repo.create_log(&log).await;
 }
 

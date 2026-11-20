@@ -1,14 +1,22 @@
 import { useState } from "react";
 import type { RequestLog } from "../types";
-import { useLogs, type LogFilters } from "../hooks/useLogs";
+import {
+  useLogs,
+  useLogSessions,
+  type LogFilters,
+  type SessionFilters,
+} from "../hooks/useLogs";
 import { useThrottledRefresh } from "../hooks/useThrottledRefresh";
 import { PageHeader } from "../components/ui/PageHeader";
+import { Tabs } from "../components/ui/Tabs";
 import { LogFiltersBar } from "../components/logs/LogFilters";
 import { LogTable } from "../components/logs/LogTable";
 import { LogDetail } from "../components/logs/LogDetail";
+import { SessionList } from "../components/logs/SessionList";
+import { SessionReader } from "../components/logs/SessionReader";
 import { Pagination } from "../components/ui/Pagination";
 import { Button } from "../components/ui/Button";
-import { exportApi } from "../lib/api";
+import { exportApi, logApi } from "../lib/api";
 import { save } from "@tauri-apps/plugin-dialog";
 import { RefreshCw, Download } from "lucide-react";
 import { toast } from "../lib/toast";
@@ -35,21 +43,41 @@ const buildCsv = (rows: RequestLog[]): string => {
 };
 
 export const LogsPage = () => {
+  const [view, setView] = useState<"requests" | "sessions">("requests");
   const [filters, setFilters] = useState<LogFilters>({ page: 1, page_size: 20 });
+  const [sessionFilters, setSessionFilters] = useState<SessionFilters>({
+    page: 1,
+    page_size: 20,
+  });
   const [selectedLog, setSelectedLog] = useState<RequestLog | null>(null);
+  const [selectedSessionKey, setSelectedSessionKey] = useState<string | null>(
+    null,
+  );
   const [exporting, setExporting] = useState<null | "csv" | "json">(null);
-  const { refresh, refreshing } = useThrottledRefresh([["logs"]]);
+  const { refresh, refreshing } = useThrottledRefresh([
+    ["logs"],
+    ["log-sessions"],
+    ["log-session"],
+  ]);
 
   const { data: logs, isLoading } = useLogs(filters);
+  const { data: sessions = [], isLoading: sessionsLoading } =
+    useLogSessions(sessionFilters);
 
-  // 分页总数估算：当前页返回数量达到页大小，则视为还有更多
   const pageSize = filters.page_size ?? 20;
   const page = filters.page ?? 1;
   const hasMore = (logs?.length ?? 0) >= pageSize;
   const estimatedTotal =
     !hasMore && page === 1 ? (logs?.length ?? 0) : page * pageSize + (hasMore ? pageSize : 0);
 
-  // 导出当前已加载日志（受分页限制，仅导出当前页；后续可扩展为全量导出）
+  const sessionPageSize = sessionFilters.page_size ?? 20;
+  const sessionPage = sessionFilters.page ?? 1;
+  const sessionsHasMore = sessions.length >= sessionPageSize;
+  const sessionsEstimatedTotal =
+    !sessionsHasMore && sessionPage === 1
+      ? sessions.length
+      : sessionPage * sessionPageSize + (sessionsHasMore ? sessionPageSize : 0);
+
   const doExport = async (kind: "csv" | "json") => {
     const rows = logs ?? [];
     if (rows.length === 0) {
@@ -58,12 +86,11 @@ export const LogsPage = () => {
     }
     setExporting(kind);
     try {
-      // 原生「另存为」对话框：跨平台一致，由用户自选保存路径
       const path = await save({
         defaultPath: `yeapi-logs-${Date.now()}.${kind}`,
         filters: [{ name: kind.toUpperCase(), extensions: [kind] }],
       });
-      if (!path) return; // 用户取消：静默返回
+      if (!path) return;
       const content = kind === "csv" ? buildCsv(rows) : JSON.stringify(rows, null, 2);
       await exportApi.writeTextFile(path, content);
       toast.success("导出成功", `已保存到 ${path}`);
@@ -74,33 +101,51 @@ export const LogsPage = () => {
     }
   };
 
+  const openRequest = async (id: string) => {
+    try {
+      setSelectedLog(await logApi.get(id));
+    } catch (error) {
+      toast.error("打开请求失败", (error as Error).message);
+    }
+  };
+
+  const openSession = (sessionKey: string) => {
+    setSelectedLog(null);
+    setView("sessions");
+    setSelectedSessionKey(sessionKey);
+  };
+
   return (
     <div>
       <PageHeader
         title="请求日志"
-        description="查看所有经过网关的请求记录"
+        description="查看请求记录，并按会话阅读多轮问答与工具执行过程"
         actions={
           <>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => doExport("csv")}
-              loading={exporting === "csv"}
-              title="导出 CSV（当前页）"
-            >
-              <Download size={14} />
-              CSV
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => doExport("json")}
-              loading={exporting === "json"}
-              title="导出 JSON（当前页）"
-            >
-              <Download size={14} />
-              JSON
-            </Button>
+            {view === "requests" && (
+              <>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => doExport("csv")}
+                  loading={exporting === "csv"}
+                  title="导出 CSV（当前页）"
+                >
+                  <Download size={14} />
+                  CSV
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => doExport("json")}
+                  loading={exporting === "json"}
+                  title="导出 JSON（当前页）"
+                >
+                  <Download size={14} />
+                  JSON
+                </Button>
+              </>
+            )}
             <button
               onClick={refresh}
               className={`p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors ${
@@ -115,28 +160,66 @@ export const LogsPage = () => {
         }
       />
 
-      {/* 筛选栏 */}
-      <LogFiltersBar value={filters} onChange={setFilters} />
-
-      {/* 日志表格 */}
-      <LogTable
-        data={logs ?? []}
-        loading={isLoading}
-        onRowClick={(log) => setSelectedLog(log)}
+      <Tabs
+        tabs={[
+          { key: "requests", label: "请求日志" },
+          { key: "sessions", label: "会话" },
+        ]}
+        activeKey={view}
+        onChange={(key) => setView(key as "requests" | "sessions")}
+        className="mb-4"
       />
 
-      {/* 分页 */}
-      <div className="mt-3 bg-bg-secondary border border-border-primary rounded-xl overflow-hidden">
-        <Pagination
-          page={page}
-          pageSize={pageSize}
-          total={estimatedTotal}
-          onChange={(page) => setFilters((f) => ({ ...f, page }))}
+      {view === "requests" ? (
+        <>
+          <LogFiltersBar value={filters} onChange={setFilters} />
+          <LogTable
+            data={logs ?? []}
+            loading={isLoading}
+            onRowClick={(log) => setSelectedLog(log)}
+          />
+          <div className="mt-3 bg-bg-secondary border border-border-primary rounded-xl overflow-hidden">
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={estimatedTotal}
+              onChange={(next) => setFilters((current) => ({ ...current, page: next }))}
+            />
+          </div>
+        </>
+      ) : selectedSessionKey ? (
+        <SessionReader
+          sessionKey={selectedSessionKey}
+          onBack={() => setSelectedSessionKey(null)}
+          onOpenRequest={openRequest}
         />
-      </div>
+      ) : (
+        <>
+          <SessionList
+            filters={sessionFilters}
+            onChange={setSessionFilters}
+            sessions={sessions}
+            loading={sessionsLoading}
+            onOpen={setSelectedSessionKey}
+          />
+          <div className="mt-3 bg-bg-secondary border border-border-primary rounded-xl overflow-hidden">
+            <Pagination
+              page={sessionPage}
+              pageSize={sessionPageSize}
+              total={sessionsEstimatedTotal}
+              onChange={(next) =>
+                setSessionFilters((current) => ({ ...current, page: next }))
+              }
+            />
+          </div>
+        </>
+      )}
 
-      {/* 详情弹窗 */}
-      <LogDetail log={selectedLog} onClose={() => setSelectedLog(null)} />
+      <LogDetail
+        log={selectedLog}
+        onClose={() => setSelectedLog(null)}
+        onOpenSession={openSession}
+      />
     </div>
   );
 };

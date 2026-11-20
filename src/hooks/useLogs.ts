@@ -16,12 +16,23 @@ export interface LogFilters {
   page_size?: number;
 }
 
+export interface SessionFilters {
+  keyword?: string;
+  client?: string;
+  start_date?: string;
+  end_date?: string;
+  page?: number;
+  page_size?: number;
+}
+
 export const logKeys = {
   all: ["logs"] as const,
   filtered: (filters: LogFilters) => ["logs", filters] as const,
   detail: (id: string) => ["logs", id] as const,
   stats: (days?: number) => ["log-stats", days ?? 30] as const,
   modeStats: (days?: number) => ["log-mode-stats", days ?? 30] as const,
+  sessions: (filters: SessionFilters) => ["log-sessions", filters] as const,
+  session: (key: string) => ["log-session", key] as const,
 };
 
 export const useLogs = (filters: LogFilters) =>
@@ -37,6 +48,20 @@ export const useLog = (id: string | null) =>
     queryKey: logKeys.detail(id ?? ""),
     queryFn: () => logApi.get(id ?? ""),
     enabled: !!id,
+  });
+
+export const useLogSessions = (filters: SessionFilters) =>
+  useQuery({
+    queryKey: logKeys.sessions(filters),
+    queryFn: () => logApi.getSessions(filters),
+    placeholderData: (prev) => prev,
+  });
+
+export const useLogSession = (sessionKey: string | null) =>
+  useQuery({
+    queryKey: logKeys.session(sessionKey ?? ""),
+    queryFn: () => logApi.getSession(sessionKey ?? ""),
+    enabled: !!sessionKey,
   });
 
 export const useLogStats = (days = 30) =>

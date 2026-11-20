@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod chat_stream;
 pub mod responses;
 
 use axum::http::HeaderMap;

@@ -169,7 +169,15 @@ impl Repository {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<RequestLog>, sqlx::Error> {
-        let mut q = sqlx::QueryBuilder::new("SELECT * FROM request_logs WHERE 1=1");
+        let mut q = sqlx::QueryBuilder::new(
+            "SELECT id, seq, api_key_id, api_key_name, channel_id, channel_name, model, upstream_model, \
+             mode, status_code, prompt_tokens, completion_tokens, total_tokens, duration_ms, \
+             error_message, is_stream, is_retry, created_at, request_body, forward_body, \
+             response_choices, trace_id, NULL AS response_body, session_key, client_session_id, \
+             session_source, session_client, session_title, request_kind, history_len, \
+             risk_level, risk_score, risk_summary, security_action, sanitized, blocked_reason \
+             FROM request_logs WHERE 1=1",
+        );
 
         if let Some(kw) = keyword {
             let pattern = format!("%{}%", kw);
@@ -246,6 +254,259 @@ impl Repository {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// 会话列表：按 session_key 聚合（不返回任何请求/响应体）。
+    pub async fn search_log_sessions(
+        &self,
+        keyword: Option<&str>,
+        client: Option<&str>,
+        date_from: Option<&str>,
+        date_to: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<LogSessionSummary>, sqlx::Error> {
+        let mut q = sqlx::QueryBuilder::new(
+            "SELECT session_key,
+                    MAX(session_title) AS session_title,
+                    MAX(session_client) AS session_client,
+                    GROUP_CONCAT(DISTINCT model) AS models,
+                    MIN(created_at) AS first_at,
+                    MAX(created_at) AS last_at,
+                    COUNT(*) AS request_count,
+                    SUM(CASE WHEN request_kind = 'turn' THEN 1 ELSE 0 END) AS turn_count,
+                    COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                    (SELECT status_code FROM request_logs r2
+                     WHERE r2.session_key = request_logs.session_key
+                     ORDER BY r2.seq DESC LIMIT 1) AS last_status_code
+             FROM request_logs
+             WHERE session_key IS NOT NULL",
+        );
+        if let Some(keyword) = keyword {
+            let pattern = format!("%{keyword}%");
+            q.push(" AND (session_title LIKE ")
+                .push_bind(pattern.clone())
+                .push(" OR session_key LIKE ")
+                .push_bind(pattern.clone())
+                .push(" OR client_session_id LIKE ")
+                .push_bind(pattern)
+                .push(")");
+        }
+        if let Some(client) = client {
+            q.push(" AND session_client = ").push_bind(client);
+        }
+        if let Some(from) = date_from {
+            q.push(" AND substr(created_at, 1, 10) >= ").push_bind(from);
+        }
+        if let Some(to) = date_to {
+            q.push(" AND substr(created_at, 1, 10) <= ").push_bind(to);
+        }
+        q.push(" GROUP BY session_key ORDER BY last_at DESC LIMIT ")
+            .push_bind(limit)
+            .push(" OFFSET ")
+            .push_bind(offset);
+
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            session_key: String,
+            session_title: Option<String>,
+            session_client: Option<String>,
+            models: Option<String>,
+            first_at: String,
+            last_at: String,
+            request_count: i64,
+            turn_count: i64,
+            total_tokens: i64,
+            last_status_code: Option<i64>,
+        }
+
+        let rows = q.build_query_as::<Row>().fetch_all(&self.pool).await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| LogSessionSummary {
+                session_key: row.session_key,
+                session_title: row.session_title,
+                session_client: row.session_client,
+                models: row
+                    .models
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter(|model| !model.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+                first_at: row.first_at,
+                last_at: row.last_at,
+                request_count: row.request_count,
+                turn_count: row.turn_count,
+                total_tokens: row.total_tokens,
+                last_status_code: row.last_status_code,
+            })
+            .collect())
+    }
+
+    pub async fn get_log_session_summary(
+        &self,
+        session_key: &str,
+    ) -> Result<Option<LogSessionSummary>, sqlx::Error> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            session_key: String,
+            session_title: Option<String>,
+            session_client: Option<String>,
+            models: Option<String>,
+            first_at: String,
+            last_at: String,
+            request_count: i64,
+            turn_count: i64,
+            total_tokens: i64,
+            last_status_code: Option<i64>,
+        }
+
+        let row = sqlx::query_as::<_, Row>(
+            "SELECT session_key,
+                    MAX(session_title) AS session_title,
+                    MAX(session_client) AS session_client,
+                    GROUP_CONCAT(DISTINCT model) AS models,
+                    MIN(created_at) AS first_at,
+                    MAX(created_at) AS last_at,
+                    COUNT(*) AS request_count,
+                    SUM(CASE WHEN request_kind = 'turn' THEN 1 ELSE 0 END) AS turn_count,
+                    COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                    (SELECT status_code FROM request_logs r2
+                     WHERE r2.session_key = request_logs.session_key
+                     ORDER BY r2.seq DESC LIMIT 1) AS last_status_code
+             FROM request_logs WHERE session_key = ? GROUP BY session_key",
+        )
+        .bind(session_key)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|row| LogSessionSummary {
+            session_key: row.session_key,
+            session_title: row.session_title,
+            session_client: row.session_client,
+            models: row
+                .models
+                .unwrap_or_default()
+                .split(',')
+                .filter(|model| !model.is_empty())
+                .map(str::to_string)
+                .collect(),
+            first_at: row.first_at,
+            last_at: row.last_at,
+            request_count: row.request_count,
+            turn_count: row.turn_count,
+            total_tokens: row.total_tokens,
+            last_status_code: row.last_status_code,
+        }))
+    }
+
+    /// 会话详情：只给主快照请求返回 request_body，其余请求仅返回响应/元数据。
+    pub async fn get_log_session_entries(
+        &self,
+        session_key: &str,
+    ) -> Result<(Option<String>, i64, Vec<LogSessionEntry>), sqlx::Error> {
+        let snapshot_id: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM request_logs
+             WHERE session_key = ? AND request_kind = 'turn'
+             ORDER BY COALESCE(history_len, 0) DESC, seq DESC LIMIT 1",
+        )
+        .bind(session_key)
+        .fetch_optional(&self.pool)
+        .await?;
+        let snapshot_id = match snapshot_id {
+            Some(id) => Some(id),
+            None => sqlx::query_scalar(
+                "SELECT id FROM request_logs WHERE session_key = ? ORDER BY seq DESC LIMIT 1",
+            )
+            .bind(session_key)
+            .fetch_optional(&self.pool)
+            .await?,
+        };
+
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            id: String,
+            seq: Option<i64>,
+            created_at: String,
+            model: String,
+            mode: String,
+            status_code: i64,
+            prompt_tokens: i64,
+            completion_tokens: i64,
+            total_tokens: i64,
+            duration_ms: i64,
+            is_retry: i64,
+            request_kind: String,
+            history_len: Option<i64>,
+            session_title: Option<String>,
+            request_body: Option<String>,
+            response_body: Option<String>,
+            response_choices: Option<String>,
+        }
+
+        let rows = sqlx::query_as::<_, Row>(
+            "SELECT id, seq, created_at, model, mode, status_code, prompt_tokens,
+                    completion_tokens, total_tokens, duration_ms, is_retry,
+                    request_kind, history_len, session_title,
+                    CASE WHEN id = ? THEN request_body ELSE NULL END AS request_body,
+                    response_body, response_choices
+             FROM request_logs WHERE session_key = ? ORDER BY seq ASC",
+        )
+        .bind(snapshot_id.as_deref().unwrap_or(""))
+        .bind(session_key)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let auxiliary_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM request_logs WHERE session_key = ? AND request_kind != 'turn'",
+        )
+        .bind(session_key)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+
+        Ok((
+            snapshot_id,
+            auxiliary_count,
+            rows.into_iter()
+                .map(|row| LogSessionEntry {
+                    id: row.id,
+                    seq: row.seq,
+                    created_at: row.created_at,
+                    model: row.model,
+                    mode: row.mode,
+                    status_code: row.status_code,
+                    prompt_tokens: row.prompt_tokens,
+                    completion_tokens: row.completion_tokens,
+                    total_tokens: row.total_tokens,
+                    duration_ms: row.duration_ms,
+                    is_retry: row.is_retry,
+                    request_kind: row.request_kind,
+                    history_len: row.history_len,
+                    session_title: row.session_title,
+                    request_body: row.request_body,
+                    response_body: row.response_body,
+                    response_choices: row.response_choices,
+                })
+                .collect(),
+        ))
+    }
+
+    /// 历史日志补算：取出尚未处理过 session 的请求体。
+    pub async fn list_logs_missing_session(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<LogBackfillRow>, sqlx::Error> {
+        sqlx::query_as::<_, LogBackfillRow>(
+            "SELECT id, request_body, mode, api_key_id
+             FROM request_logs
+             WHERE session_key IS NULL AND history_len IS NULL AND request_body IS NOT NULL
+             ORDER BY seq ASC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
     }
 
     /// 按天聚合请求统计（供用量页面）
@@ -415,9 +676,10 @@ impl Repository {
                (id, seq, api_key_id, api_key_name, channel_id, channel_name, model, upstream_model,
                 mode, status_code, prompt_tokens, completion_tokens, total_tokens, duration_ms,
                 error_message, is_stream, is_retry, created_at, request_body, forward_body,
-                response_choices, trace_id,
+                response_choices, trace_id, response_body, session_key, client_session_id,
+                session_source, session_client, session_title, request_kind, history_len,
                 risk_level, risk_score, risk_summary, security_action, sanitized, blocked_reason)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&log.id)
         .bind(seq)
@@ -441,12 +703,65 @@ impl Repository {
         .bind(&log.forward_body)
         .bind(&log.response_choices)
         .bind(&log.trace_id)
+        .bind(&log.response_body)
+        .bind(&log.session_key)
+        .bind(&log.client_session_id)
+        .bind(&log.session_source)
+        .bind(&log.session_client)
+        .bind(&log.session_title)
+        .bind(&log.request_kind)
+        .bind(log.history_len)
         .bind(&log.risk_level)
         .bind(log.risk_score)
         .bind(&log.risk_summary)
         .bind(&log.security_action)
         .bind(log.sanitized)
         .bind(&log.blocked_reason)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 非流式响应转换完成后，补写最终返回给客户端的协议响应体。
+    pub async fn update_log_response_body(
+        &self,
+        id: &str,
+        body: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE request_logs SET response_body = ? WHERE id = ?")
+            .bind(body)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 补算历史日志的会话字段（旧日志迁移）。
+    pub async fn update_log_session(
+        &self,
+        id: &str,
+        session_key: Option<&str>,
+        client_session_id: Option<&str>,
+        session_source: &str,
+        session_client: Option<&str>,
+        session_title: Option<&str>,
+        request_kind: &str,
+        history_len: Option<i64>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE request_logs SET
+               session_key = ?, client_session_id = ?, session_source = ?,
+               session_client = ?, session_title = ?, request_kind = ?, history_len = ?
+             WHERE id = ?",
+        )
+        .bind(session_key)
+        .bind(client_session_id)
+        .bind(session_source)
+        .bind(session_client)
+        .bind(session_title)
+        .bind(request_kind)
+        .bind(history_len)
+        .bind(id)
         .execute(&self.pool)
         .await?;
         Ok(())

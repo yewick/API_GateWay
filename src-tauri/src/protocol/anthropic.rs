@@ -55,6 +55,10 @@ pub struct AnthropicStreamConverter {
     /// 未完成的行缓冲（跨 TCP 分片）。
     buffer: Vec<u8>,
     finished: bool,
+    /// 旁路累积的文本（用于日志层的最终响应）。
+    text: String,
+    /// 正常结束后的最终 Anthropic message 对象。
+    final_message: Option<Value>,
 }
 
 impl AnthropicStreamConverter {
@@ -65,7 +69,14 @@ impl AnthropicStreamConverter {
             state: AnthropicStreamState::default(),
             buffer: Vec::new(),
             finished: false,
+            text: String::new(),
+            final_message: None,
         }
+    }
+
+    /// 供日志层读取：返回最终 message 对象（含文本与 tool_use）。
+    pub fn final_response(&self) -> Option<Value> {
+        self.final_message.clone()
     }
 
     /// 喂入一段上游字节，返回本次产生的 Anthropic SSE 事件字符串。
@@ -159,6 +170,7 @@ impl AnthropicStreamConverter {
             // 文本增量
             if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
                 if !content.is_empty() {
+                    self.text.push_str(content);
                     self.ensure_text_block_open(out);
                     out.push(self.event("content_block_delta", &json!({
                         "type": "content_block_delta",
@@ -260,6 +272,44 @@ impl AnthropicStreamConverter {
         }
 
         let stop_reason = super::finish_reason_to_stop_reason(finish_reason);
+
+        // 旁路构造最终 message（与流式事件顺序一致，供日志落库）。
+        let mut blocks: Vec<(usize, Value)> = Vec::new();
+        if !self.text.is_empty() {
+            blocks.push((
+                self.state.text_block_index,
+                json!({ "type": "text", "text": self.text }),
+            ));
+        }
+        for (_, state) in self.state.tool_calls.iter() {
+            let input = serde_json::from_str::<Value>(&state.arguments)
+                .unwrap_or_else(|_| json!({ "_raw_arguments": state.arguments }));
+            blocks.push((
+                state.block_index,
+                json!({
+                    "type": "tool_use",
+                    "id": state.id,
+                    "name": state.name,
+                    "input": input
+                }),
+            ));
+        }
+        blocks.sort_by_key(|(index, _)| *index);
+        let content: Vec<Value> = blocks.into_iter().map(|(_, block)| block).collect();
+        self.final_message = Some(json!({
+            "id": self.message_id,
+            "type": "message",
+            "role": "assistant",
+            "model": self.model,
+            "content": content,
+            "stop_reason": stop_reason,
+            "stop_sequence": Value::Null,
+            "usage": {
+                "input_tokens": self.state.input_tokens,
+                "output_tokens": self.state.output_tokens
+            }
+        }));
+
         out.push(self.event("message_delta", &json!({
             "type": "message_delta",
             "delta": {
@@ -303,24 +353,27 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_call_stream() {
+    fn test_final_response_contains_text_and_tool_use() {
         let mut c = AnthropicStreamConverter::new("gpt-5");
-        let mut all = Vec::new();
-
-        all.extend(c.push(
-            b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"search\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n",
-        ));
-        all.extend(c.push(
-            b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\"}}]},\"finish_reason\":null}]}\n",
-        ));
-        all.extend(c.push(b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n"));
-        all.extend(c.finish());
-
-        let joined = all.join("");
-        assert!(joined.contains("tool_use"));
-        assert!(joined.contains("call_1"));
-        assert!(joined.contains("input_json_delta"));
-        // stop_reason 应映射为 tool_use
-        assert!(joined.contains("\"stop_reason\":\"tool_use\""));
+        let mut events = c
+            .push(b"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n")
+            .join("");
+        events.push_str(
+            &c.push(
+                b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"search\",\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n",
+            )
+            .join(""),
+        );
+        events.push_str(&c.finish().join(""));
+        let body = c.final_response().expect("final message");
+        assert!(events.contains("input_json_delta"));
+        assert!(events.contains("\"stop_reason\":\"tool_use\""));
+        assert_eq!(body["type"], "message");
+        assert_eq!(body["content"][0]["type"], "text");
+        assert_eq!(body["content"][0]["text"], "Hello");
+        assert_eq!(body["content"][1]["type"], "tool_use");
+        assert_eq!(body["content"][1]["name"], "search");
+        assert_eq!(body["content"][1]["input"]["q"], "x");
+        assert_eq!(body["stop_reason"], "tool_use");
     }
 }

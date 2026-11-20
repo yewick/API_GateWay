@@ -2,6 +2,9 @@ pub mod auth;
 pub mod handlers;
 pub mod quota;
 pub mod router;
+pub mod session_backfill;
+pub mod session_identity;
+pub mod stream_log;
 
 use crate::AppState;
 use serde::Serialize;

@@ -1,233 +1,149 @@
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { oneDark, oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
-import type { RequestLog, SecurityFinding } from "../../types";
-import { formatTime, statusColor } from "../../lib/constants";
-import { Modal } from "../ui/Modal";
-import { Badge } from "../ui/Badge";
-import { useTheme } from "../../hooks/useTheme";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { ExternalLink, MessagesSquare, Wrench } from "lucide-react";
+import type { RequestLog } from "../../types";
+import { Badge } from "../ui/Badge";
+import { Button } from "../ui/Button";
+import { Modal } from "../ui/Modal";
+import { Tabs } from "../ui/Tabs";
+import { formatTime, statusColor } from "../../lib/constants";
 import { logApi } from "../../lib/api";
+import { useLog } from "../../hooks/useLogs";
+import { normalizeLog } from "../../lib/logNormalize";
+import { LogConversation } from "./LogConversation";
+import { LogOverview } from "./LogOverview";
+import { LogRawJson } from "./LogRawJson";
+import { LogTimeline } from "./LogTimeline";
+import { LogToolCalls } from "./LogToolCalls";
 
 interface LogDetailProps {
   log: RequestLog | null;
   onClose: () => void;
+  onOpenSession?: (sessionKey: string) => void;
 }
 
-// 尝试 JSON 格式化，失败则原样返回
-const prettyJson = (raw: string): string => {
-  try {
-    return JSON.stringify(JSON.parse(raw), null, 2);
-  } catch {
-    return raw;
-  }
-};
-
-function DetailRow({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
-  return (
-    <div className="flex items-start justify-between py-2 border-b border-border-primary/50 last:border-0">
-      <span className="text-xs text-text-muted w-28 flex-shrink-0">{label}</span>
-      <span className={`text-xs text-text-primary text-right break-all ${mono ? "mono" : ""}`}>
-        {value ?? "-"}
-      </span>
-    </div>
-  );
-}
-
-export function LogDetail({ log, onClose }: LogDetailProps) {
-  const { isDark } = useTheme();
+export function LogDetail({ log, onClose, onOpenSession }: LogDetailProps) {
+  const { data: fetched } = useLog(log?.id ?? null);
+  const detail = fetched ?? log;
 
   const { data: findings } = useQuery({
     queryKey: ["log-findings", log?.id],
     queryFn: () => logApi.getFindings(log!.id),
-    enabled: !!log,
+    enabled: !!log?.id,
   });
 
-  if (!log) return null;
+  const [tab, setTab] = useState("overview");
+  useEffect(() => {
+    setTab("overview");
+  }, [log?.id]);
+
+  const normalized = useMemo(
+    () =>
+      detail
+        ? normalizeLog(detail)
+        : null,
+    [detail?.id, detail?.request_body, detail?.response_body, detail?.response_choices],
+  );
+
+  if (!log || !detail || !normalized) return null;
+
+  const visibleMessages = normalized.messages.filter((message) => !message.hidden);
+  const requestTitle = detail.session_title || "未命名会话";
+
+  const tabs = [
+    { key: "overview", label: "概览" },
+    { key: "conversation", label: "问答", badge: visibleMessages.length },
+    { key: "tools", label: "工具调用", badge: normalized.toolCalls.length },
+    { key: "timeline", label: "执行过程" },
+    { key: "raw", label: "原始 JSON" },
+  ];
 
   return (
     <Modal
-      open={!!log}
+      open
       onClose={onClose}
       title="请求日志详情"
-      description={`ID: ${log.id}`}
-      size="lg"
+      description={`ID: ${detail.id}`}
+      size="xl"
     >
-      <div className="space-y-6">
-        {/* 基本信息 */}
-        <div>
-          <h4 className="text-sm font-semibold text-text-primary mb-2">基本信息</h4>
-          <div className="grid grid-cols-2 gap-x-6">
-            <DetailRow label="时间" value={formatTime(log.created_at)} />
-            <DetailRow label="密钥" value={log.api_key_name} />
-            <DetailRow label="渠道" value={log.channel_name} />
-            <DetailRow label="模型" value={log.model} mono />
-            <DetailRow label="上游模型" value={log.upstream_model} mono />
-            <DetailRow label="模式" value={log.mode} />
-            <DetailRow label="Trace ID" value={log.trace_id} mono />
-            <DetailRow
-              label="状态码"
-              value={
-                <Badge variant={statusColor(log.status_code) as never}>
-                  {log.status_code}
-                </Badge>
-              }
-            />
-            <DetailRow label="流式" value={log.is_stream ? "是" : "否"} />
-          </div>
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant={statusColor(detail.status_code) as never}>
+            HTTP {detail.status_code}
+          </Badge>
+          <Badge variant="neutral">{detail.mode}</Badge>
+          <Badge variant="outline">{detail.is_stream ? "流式" : "非流式"}</Badge>
+          <span className="text-xs text-text-muted">
+            {formatTime(detail.created_at)}
+          </span>
+          <span className="text-xs text-text-muted">
+            {detail.model} · {detail.total_tokens.toLocaleString()} tokens · {detail.duration_ms}ms
+          </span>
         </div>
 
-        {/* Token 与延迟 */}
-        <div>
-          <h4 className="text-sm font-semibold text-text-primary mb-2">Token 与延迟</h4>
-          <div className="grid grid-cols-2 gap-x-6">
-            <DetailRow label="提示词 Tokens" value={log.prompt_tokens.toLocaleString()} mono />
-            <DetailRow label="补全 Tokens" value={log.completion_tokens.toLocaleString()} mono />
-            <DetailRow label="总 Tokens" value={log.total_tokens.toLocaleString()} mono />
-            <DetailRow label="延迟" value={`${log.duration_ms}ms`} mono />
-          </div>
-        </div>
-
-        {/* 错误信息 */}
-        {log.error_message && (
-          <div>
-            <h4 className="text-sm font-semibold text-text-primary mb-2">错误信息</h4>
-            <div className="px-3 py-2 bg-danger/10 border border-danger/30 rounded-lg">
-              <p className="text-xs text-danger mono break-all">{log.error_message}</p>
+        {detail.session_key && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border-primary bg-bg-tertiary px-3 py-2">
+            <div className="min-w-0">
+              <div className="text-xs font-medium text-text-primary">
+                所属会话：{requestTitle}
+                {detail.session_client ? ` · ${detail.session_client}` : ""}
+              </div>
+              <div className="mt-0.5 text-[11px] text-text-muted mono break-all">
+                {detail.session_key}
+              </div>
             </div>
-          </div>
-        )}
-
-        {/* 安全审计 */}
-        <div>
-          <h4 className="text-sm font-semibold text-text-primary mb-2">安全审计</h4>
-          <div className="grid grid-cols-2 gap-x-6">
-            <DetailRow
-              label="风险等级"
-              value={
-                <Badge
-                  variant={
-                    log.risk_level === "high" || log.risk_level === "critical"
-                      ? "danger"
-                      : log.risk_level === "medium"
-                        ? "warning"
-                        : log.risk_level === "low"
-                          ? "success"
-                          : "neutral"
-                  }
-                >
-                  {log.risk_level || "none"}
-                </Badge>
-              }
-            />
-            <DetailRow label="风险评分" value={log.risk_score} mono />
-            <DetailRow label="安全动作" value={log.security_action || "none"} />
-            <DetailRow label="已脱敏" value={log.sanitized ? "是" : "否"} />
-            {log.blocked_reason && (
-              <DetailRow label="拦截原因" value={log.blocked_reason} />
+            {onOpenSession && (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => onOpenSession(detail.session_key!)}
+              >
+                <ExternalLink size={14} />
+                查看完整会话
+              </Button>
             )}
           </div>
+        )}
 
-          {/* 风险明细 */}
-          {findings && findings.length > 0 && (
-            <div className="mt-3">
-              <p className="text-xs font-medium text-text-secondary mb-2">
-                风险明细（{findings.length}）
-              </p>
-              <ul className="space-y-2">
-                {findings.map((f: SecurityFinding) => (
-                  <li
-                    key={f.id}
-                    className="flex items-start gap-2 px-3 py-2 bg-bg-tertiary rounded-lg border border-border-primary/50"
-                  >
-                    <Badge
-                      variant={
-                        f.severity === "critical" || f.severity === "high"
-                          ? "danger"
-                          : f.severity === "medium"
-                            ? "warning"
-                            : "neutral"
-                      }
-                    >
-                      {f.severity}
-                    </Badge>
-                    <div className="flex-1 min-w-0">
-                      <code className="text-xs mono text-text-primary break-all">
-                        {f.rule}
-                      </code>
-                      {f.detail && (
-                        <p className="text-xs text-text-muted mt-0.5 break-all">
-                          {f.detail}
-                        </p>
-                      )}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </div>
+        {normalized.degraded && (
+          <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+            {normalized.degradedReason}
+          </div>
+        )}
+        {normalized.warnings.length > 0 && (
+          <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+            {normalized.warnings.join("；")}
+          </div>
+        )}
+
+        <Tabs tabs={tabs} activeKey={tab} onChange={setTab} />
+
+        <div className="pt-1">
+          {tab === "overview" && (
+            <LogOverview log={detail} findings={findings} normalized={normalized} />
           )}
+          {tab === "conversation" && (
+            <LogConversation normalized={normalized} />
+          )}
+          {tab === "tools" && (
+            <LogToolCalls toolCalls={normalized.toolCalls} />
+          )}
+          {tab === "timeline" && (
+            <LogTimeline events={normalized.events} />
+          )}
+          {tab === "raw" && <LogRawJson log={detail} />}
         </div>
 
-        {/* 请求体 */}
-        {log.request_body && (
-          <div>
-            <h4 className="text-sm font-semibold text-text-primary mb-2">请求体</h4>
-            <SyntaxHighlighter
-              language="json"
-              style={isDark ? oneDark : oneLight}
-              customStyle={{
-                margin: 0,
-                borderRadius: "0.5rem",
-                fontSize: "12px",
-                background: "var(--bg-tertiary)",
-              }}
-              wrapLongLines
-            >
-              {prettyJson(log.request_body)}
-            </SyntaxHighlighter>
-          </div>
-        )}
-
-        {/* 响应选择（response_choices，多候选/流式聚合结果） */}
-        {log.response_choices && (
-          <div>
-            <h4 className="text-sm font-semibold text-text-primary mb-2">响应选择</h4>
-            <SyntaxHighlighter
-              language="json"
-              style={isDark ? oneDark : oneLight}
-              customStyle={{
-                margin: 0,
-                borderRadius: "0.5rem",
-                fontSize: "12px",
-                background: "var(--bg-tertiary)",
-              }}
-              wrapLongLines
-            >
-              {prettyJson(log.response_choices)}
-            </SyntaxHighlighter>
-          </div>
-        )}
-
-        {/* 脱敏后转发体（实际发送到上游） */}
-        {log.forward_body && (
-          <div>
-            <h4 className="text-sm font-semibold text-text-primary mb-2">
-              脱敏后转发体（实际发送到上游）
-            </h4>
-            <SyntaxHighlighter
-              language="json"
-              style={isDark ? oneDark : oneLight}
-              customStyle={{
-                margin: 0,
-                borderRadius: "0.5rem",
-                fontSize: "12px",
-                background: "var(--bg-tertiary)",
-              }}
-              wrapLongLines
-            >
-              {prettyJson(log.forward_body)}
-            </SyntaxHighlighter>
-          </div>
-        )}
+        <div className="flex items-center gap-3 border-t border-border-primary/60 pt-3 text-[11px] text-text-muted">
+          <span className="flex items-center gap-1">
+            <MessagesSquare size={12} />
+            {visibleMessages.length} 条可见消息
+          </span>
+          <span className="flex items-center gap-1">
+            <Wrench size={12} />
+            {normalized.toolCalls.length} 个工具调用
+          </span>
+        </div>
       </div>
     </Modal>
   );

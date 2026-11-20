@@ -7,7 +7,7 @@ import type { Channel, CreateChannelInput, UpdateChannelInput, TestChannelResult
   IndexSummary, DocumentContent, UploadDocumentResult, ConversationMessage, KbChunkView,
   ServiceStatus, ClientKind, ClientSetupStatus, ApplyClientInput, ApplyClientResult,
   DisconnectClientResult, ClientTestResult, SetupModelOption, ClientSetupPreview,
-  ServerStatus, ReconcileReport, DisconnectScope } from "../types";
+  ServerStatus, ReconcileReport, DisconnectScope, LogSessionSummary, LogSessionDetail } from "../types";
 
 // 渠道管理 API
 export const channelApi = {
@@ -46,6 +46,15 @@ interface GetLogsInput {
   page_size?: number;
 }
 
+interface GetLogSessionsInput {
+  keyword?: string;
+  client?: string;
+  start_date?: string;
+  end_date?: string;
+  page?: number;
+  page_size?: number;
+}
+
 // 日志 API
 export const logApi = {
   getAll: (input?: GetLogsInput) => invoke<RequestLog[]>("get_logs", { input: input || {} }),
@@ -54,6 +63,10 @@ export const logApi = {
   getStats: (days?: number) => invoke<LogStats[]>("get_log_stats", { days }),
   getModeStats: (days?: number) => invoke<LogModeStats[]>("get_mode_stats", { days }),
   getFindings: (logId: string) => invoke<SecurityFinding[]>("get_log_findings", { logId }),
+  getSessions: (input?: GetLogSessionsInput) =>
+    invoke<LogSessionSummary[]>("get_log_sessions", { input: input || {} }),
+  getSession: (sessionKey: string) =>
+    invoke<LogSessionDetail>("get_log_session", { sessionKey }),
 };
 
 // 仪表盘 API

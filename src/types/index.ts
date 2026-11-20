@@ -50,13 +50,61 @@ export interface RequestLog {
   request_body: string | null;
   forward_body: string | null;
   response_choices: string | null;
+  response_body: string | null;
   trace_id: string | null;
+  session_key: string | null;
+  client_session_id: string | null;
+  session_source: string;
+  session_client: string | null;
+  session_title: string | null;
+  request_kind: string;
+  history_len: number | null;
   risk_level: string;
   risk_score: number;
   risk_summary: string | null;
   security_action: string;
   sanitized: boolean;
   blocked_reason: string | null;
+}
+
+export interface LogSessionSummary {
+  session_key: string;
+  session_title: string | null;
+  session_client: string | null;
+  models: string[];
+  first_at: string;
+  last_at: string;
+  request_count: number;
+  turn_count: number;
+  total_tokens: number;
+  last_status_code: number | null;
+}
+
+export interface LogSessionEntry {
+  id: string;
+  seq: number | null;
+  created_at: string;
+  model: string;
+  mode: string;
+  status_code: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  duration_ms: number;
+  is_retry: number;
+  request_kind: string;
+  history_len: number | null;
+  session_title: string | null;
+  request_body: string | null;
+  response_body: string | null;
+  response_choices: string | null;
+}
+
+export interface LogSessionDetail {
+  summary: LogSessionSummary;
+  snapshot_id: string | null;
+  auxiliary_count: number;
+  logs: LogSessionEntry[];
 }
 
 export interface DashboardStats {

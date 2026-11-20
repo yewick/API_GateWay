@@ -13,13 +13,16 @@ use std::time::Instant;
 use super::auth::key_is_expired;
 use super::quota;
 use super::router::SharedState;
+use super::session_identity::{self, Protocol, SessionMeta};
+use super::stream_log::{PendingLog, StreamLogGuard};
 use crate::adaptor::{get_adaptor, ProxyRequest};
 use crate::core::dispatcher::Dispatcher;
 use crate::core::proxy;
-use crate::db::models::RequestLog;
+use crate::db::models::{Channel, RequestLog};
 use crate::db::repository::Repository;
 use crate::protocol;
 use crate::protocol::anthropic::AnthropicStreamConverter;
+use crate::protocol::chat_stream::ChatStreamAggregator;
 use crate::protocol::responses::ResponsesStreamConverter;
 use crate::security::{self, SecurityAction};
 use crate::utils;
@@ -91,6 +94,7 @@ struct AuthContext {
     repo: Arc<Repository>,
     /// 限额 Key 的输出预算；`None` 表示不限量。
     quota: Option<quota::QuotaBudget>,
+    session: SessionMeta,
 }
 
 async fn authenticate_and_check_quota(
@@ -98,10 +102,14 @@ async fn authenticate_and_check_quota(
     headers: &HeaderMap,
     model: &str,
     body: &serde_json::Value,
+    protocol: Protocol,
+    mode: &'static str,
+    raw_body: &serde_json::Value,
+    request_body: Option<&str>,
     requested_max_tokens: i64,
 ) -> Result<AuthContext, (u16, String)> {
     let repo = Arc::new(Repository::new(shared.state.db.pool.clone()));
-    let request_body = serde_json::to_string(body).ok();
+    let anonymous_session = session_identity::extract(headers, raw_body, protocol, "unknown");
 
     let api_key = match protocol::extract_api_key(headers) {
         Some(k) => k,
@@ -111,9 +119,12 @@ async fn authenticate_and_check_quota(
                 None,
                 None,
                 model,
+                mode,
                 401,
                 "Missing API key",
-                request_body.as_deref(),
+                request_body,
+                &anonymous_session,
+                false,
             )
             .await;
             return Err((401, "Missing API key".to_string()));
@@ -128,14 +139,19 @@ async fn authenticate_and_check_quota(
                 None,
                 None,
                 model,
+                mode,
                 401,
                 "Invalid API key",
-                request_body.as_deref(),
+                request_body,
+                &anonymous_session,
+                false,
             )
             .await;
             return Err((401, "Invalid API key".to_string()));
         }
     };
+
+    let session = session_identity::extract(headers, raw_body, protocol, &key_record.id);
 
     if let Some(ref expires_at) = key_record.expires_at {
         if key_is_expired(expires_at) {
@@ -144,9 +160,12 @@ async fn authenticate_and_check_quota(
                 Some(&key_record.id),
                 Some(&key_record.name),
                 model,
+                mode,
                 401,
                 "API key has expired",
-                request_body.as_deref(),
+                request_body,
+                &session,
+                false,
             )
             .await;
             return Err((401, "API key has expired".to_string()));
@@ -164,9 +183,12 @@ async fn authenticate_and_check_quota(
                 Some(&key_record.id),
                 Some(&key_record.name),
                 model,
+                mode,
                 429,
                 &message,
-                request_body.as_deref(),
+                request_body,
+                &session,
+                false,
             )
             .await;
             return Err((429, message));
@@ -178,21 +200,26 @@ async fn authenticate_and_check_quota(
         api_key_name: key_record.name,
         repo,
         quota: remaining.map(|_| budget),
+        session,
     })
 }
 
 /// 写一条「请求到达网关但被拒」的失败日志（401/429/503 等），便于在日志页追踪失败原因。
 /// 失败不影响响应（静默吞错），与成功路径一致。
+#[allow(clippy::too_many_arguments)]
 async fn write_failed_log(
     repo: &Repository,
     api_key_id: Option<&str>,
     api_key_name: Option<&str>,
     model: &str,
+    mode: &str,
     status_code: u16,
     error_message: &str,
     request_body: Option<&str>,
+    session: &SessionMeta,
+    is_stream: bool,
 ) {
-    let log = RequestLog {
+    let mut log = RequestLog {
         id: utils::id::new_id(),
         seq: None,
         api_key_id: api_key_id.map(|s| s.to_string()),
@@ -201,14 +228,14 @@ async fn write_failed_log(
         channel_name: None,
         model: model.to_string(),
         upstream_model: None,
-        mode: "chat".to_string(),
+        mode: mode.to_string(),
         status_code: status_code as i64,
         prompt_tokens: 0,
         completion_tokens: 0,
         total_tokens: 0,
         duration_ms: 0,
         error_message: Some(error_message.to_string()),
-        is_stream: 0,
+        is_stream: if is_stream { 1 } else { 0 },
         is_retry: 0,
         created_at: utils::time::now_iso(),
         request_body: request_body.map(|s| s.to_string()),
@@ -221,7 +248,73 @@ async fn write_failed_log(
         security_action: "none".to_string(),
         sanitized: 0,
         blocked_reason: None,
+        response_body: None,
+        session_key: None,
+        client_session_id: None,
+        session_source: "none".to_string(),
+        session_client: None,
+        session_title: None,
+        request_kind: "turn".to_string(),
+        history_len: None,
     };
+    session.apply(&mut log);
+    let _ = repo.create_log(&log).await;
+}
+
+/// 流式渠道级别的失败日志（无渠道 / 上游非 2xx / 连接失败）。
+#[allow(clippy::too_many_arguments)]
+async fn write_stream_failure(
+    repo: &Repository,
+    api_key_id: &str,
+    api_key_name: &str,
+    session: &SessionMeta,
+    mode: &str,
+    model: &str,
+    status_code: u16,
+    error_message: &str,
+    channel: Option<&Channel>,
+    is_retry: bool,
+    request_body: Option<&str>,
+) {
+    let mut log = RequestLog {
+        id: utils::id::new_id(),
+        seq: None,
+        api_key_id: Some(api_key_id.to_string()),
+        api_key_name: Some(api_key_name.to_string()),
+        channel_id: channel.map(|c| c.id.clone()),
+        channel_name: channel.map(|c| c.name.clone()),
+        model: model.to_string(),
+        upstream_model: None,
+        mode: mode.to_string(),
+        status_code: status_code as i64,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        duration_ms: 0,
+        error_message: Some(error_message.to_string()),
+        is_stream: 1,
+        is_retry: if is_retry { 1 } else { 0 },
+        created_at: utils::time::now_iso(),
+        request_body: request_body.map(str::to_string),
+        forward_body: None,
+        response_choices: None,
+        trace_id: None,
+        response_body: None,
+        session_key: None,
+        client_session_id: None,
+        session_source: "none".to_string(),
+        session_client: None,
+        session_title: None,
+        request_kind: "turn".to_string(),
+        history_len: None,
+        risk_level: "none".to_string(),
+        risk_score: 0,
+        risk_summary: None,
+        security_action: "none".to_string(),
+        sanitized: 0,
+        blocked_reason: None,
+    };
+    session.apply(&mut log);
     let _ = repo.create_log(&log).await;
 }
 
@@ -275,6 +368,8 @@ pub async fn handle_chat_completions(
     }
 
     let repo = Arc::new(Repository::new(shared.state.db.pool.clone()));
+    let anonymous_session =
+        session_identity::extract(&headers, &json, Protocol::Chat, "unknown");
 
     // 2. API Key 鉴权
     let auth_header = headers
@@ -289,9 +384,12 @@ pub async fn handle_chat_completions(
             None,
             None,
             &model,
+            "chat",
             401,
             "Missing API key",
             Some(body_str.as_ref()),
+            &anonymous_session,
+            is_stream,
         )
         .await;
         return (StatusCode::UNAUTHORIZED, "Missing API key").into_response();
@@ -305,14 +403,19 @@ pub async fn handle_chat_completions(
                 None,
                 None,
                 &model,
+                "chat",
                 401,
                 "Invalid API key",
                 Some(body_str.as_ref()),
+                &anonymous_session,
+                is_stream,
             )
             .await;
             return (StatusCode::UNAUTHORIZED, "Invalid API key").into_response();
         }
     };
+
+    let session = session_identity::extract(&headers, &json, Protocol::Chat, &key_record.id);
 
     // 2.5 过期检查
     if let Some(ref expires_at) = key_record.expires_at {
@@ -322,9 +425,12 @@ pub async fn handle_chat_completions(
                 Some(&key_record.id),
                 Some(&key_record.name),
                 &model,
+                "chat",
                 401,
                 "API key has expired",
                 Some(body_str.as_ref()),
+                &session,
+                is_stream,
             )
             .await;
             return error_response(401, "API key has expired");
@@ -344,9 +450,12 @@ pub async fn handle_chat_completions(
                     Some(&key_record.id),
                     Some(&key_record.name),
                     &model,
+                    "chat",
                     429,
                     &message,
                     Some(body_str.as_ref()),
+                    &session,
+                    is_stream,
                 )
                 .await;
                 return error_response(429, &message);
@@ -375,6 +484,7 @@ pub async fn handle_chat_completions(
             key_record.name,
             request_body_str,
             trace_id,
+            session,
         )
         .await
     } else {
@@ -388,10 +498,16 @@ pub async fn handle_chat_completions(
             Some(request_body_str),
             trace_id,
             "chat",
+            &session,
         )
         .await
         {
-            Ok(result) => (StatusCode::OK, Json(result.body)).into_response(),
+            Ok(result) => {
+                if let Ok(body) = serde_json::to_string(&result.body) {
+                    let _ = repo.update_log_response_body(&result.log_id, &body).await;
+                }
+                (StatusCode::OK, Json(result.body)).into_response()
+            }
             Err((code, msg)) => error_response(code, &msg),
         }
     }
@@ -439,6 +555,7 @@ async fn handle_stream(
     api_key_name: String,
     request_body: String,
     trace_id: Option<String>,
+    session: SessionMeta,
 ) -> Response {
     let repo = Arc::new(Repository::new(shared.state.db.pool.clone()));
     let model = json
@@ -449,9 +566,7 @@ async fn handle_stream(
 
     // 安全扫描（与非流式路径一致）
     let security_settings = security::get_security_settings(&shared.app);
-    // 加载自定义规则
     let custom_rules = repo.get_enabled_custom_rules().await.unwrap_or_default();
-    // 加载被禁用的内置规则
     let disabled_builtin: HashSet<String> = repo
         .get_all_builtin_rules()
         .await
@@ -467,7 +582,7 @@ async fn handle_stream(
         &disabled_builtin,
     );
     if matches!(security_result.action, SecurityAction::Block) {
-        let log = RequestLog {
+        let mut log = RequestLog {
             id: utils::id::new_id(),
             seq: None,
             api_key_id: Some(api_key_id.clone()),
@@ -490,6 +605,14 @@ async fn handle_stream(
             forward_body: None,
             response_choices: None,
             trace_id: trace_id.clone(),
+            response_body: None,
+            session_key: None,
+            client_session_id: None,
+            session_source: "none".to_string(),
+            session_client: None,
+            session_title: None,
+            request_kind: "turn".to_string(),
+            history_len: None,
             risk_level: security_result.risk_level.as_str().to_string(),
             risk_score: security_result.risk_score as i64,
             risk_summary: Some(security_result.summary.clone()),
@@ -497,6 +620,7 @@ async fn handle_stream(
             sanitized: 0,
             blocked_reason: security_result.blocked_reason.clone(),
         };
+        session.apply(&mut log);
         let log_id = log.id.clone();
         let _ = repo.create_log(&log).await;
         let _ = repo
@@ -516,7 +640,22 @@ async fn handle_stream(
     };
     let selected_channels = Dispatcher::select_channels(&channels, &model);
     if selected_channels.is_empty() {
-        return error_response(503, &format!("No channel available for model: {}", model));
+        let message = format!("No channel available for model: {}", model);
+        write_stream_failure(
+            &repo,
+            &api_key_id,
+            &api_key_name,
+            &session,
+            "chat",
+            &model,
+            503,
+            &message,
+            None,
+            false,
+            Some(&request_body),
+        )
+        .await;
+        return error_response(503, &message);
     }
 
     // 重试配置
@@ -532,6 +671,7 @@ async fn handle_stream(
     for (attempt, channel) in selected_channels.into_iter().take(max_attempts).enumerate() {
         let config = Dispatcher::channel_to_config(&channel);
         let adaptor = get_adaptor(&channel.channel_type);
+        let is_retry = attempt > 0;
         let request = ProxyRequest {
             model: model.clone(),
             body: json.clone(),
@@ -542,58 +682,119 @@ async fn handle_stream(
             Ok(resp) => {
                 let status = resp.status();
                 if !status.is_success() {
-                    // 上游返回错误（非 2xx），读错误体，尝试下一个渠道
                     let body_str = resp.text().await.unwrap_or_default();
-                    last_error = Some(format!("{}: {}", channel.name, body_str));
+                    let error = format!(
+                        "{}: {}",
+                        channel.name,
+                        body_str.chars().take(2000).collect::<String>()
+                    );
+                    last_error = Some(error.clone());
+                    write_stream_failure(
+                        &repo,
+                        &api_key_id,
+                        &api_key_name,
+                        &session,
+                        "chat",
+                        &model,
+                        status.as_u16(),
+                        &error,
+                        Some(&channel),
+                        is_retry,
+                        Some(&request_body),
+                    )
+                    .await;
                     continue;
                 }
 
                 let start = Instant::now();
-                let is_retry = if attempt > 0 { 1 } else { 0 };
+                let mut log = RequestLog {
+                    id: utils::id::new_id(),
+                    seq: None,
+                    api_key_id: Some(api_key_id.clone()),
+                    api_key_name: Some(api_key_name.clone()),
+                    channel_id: Some(channel.id.clone()),
+                    channel_name: Some(channel.name.clone()),
+                    model: model.clone(),
+                    upstream_model: Some(model.clone()),
+                    mode: "chat".to_string(),
+                    status_code: 200,
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                    total_tokens: 0,
+                    duration_ms: 0,
+                    error_message: None,
+                    is_stream: 1,
+                    is_retry: if is_retry { 1 } else { 0 },
+                    created_at: utils::time::now_iso(),
+                    request_body: Some(request_body.clone()),
+                    forward_body: None,
+                    response_choices: None,
+                    trace_id: trace_id.clone(),
+                    response_body: None,
+                    session_key: None,
+                    client_session_id: None,
+                    session_source: "none".to_string(),
+                    session_client: None,
+                    session_title: None,
+                    request_kind: "turn".to_string(),
+                    history_len: None,
+                    risk_level: security_result.risk_level.as_str().to_string(),
+                    risk_score: security_result.risk_score as i64,
+                    risk_summary: if security_result.summary.is_empty() {
+                        None
+                    } else {
+                        Some(security_result.summary.clone())
+                    },
+                    security_action: security_result.action.as_str().to_string(),
+                    sanitized: if security_result.sanitized { 1 } else { 0 },
+                    blocked_reason: security_result.blocked_reason.clone(),
+                };
+                session.apply(&mut log);
 
-                // 克隆日志所需数据（闭包要 move 进流中）
-                let repo_clone = repo.clone();
-                let api_key_id_c = api_key_id.clone();
-                let api_key_name_c = api_key_name.clone();
-                let model_c = model.clone();
-                let request_body_c = request_body.clone();
-                let channel_name_c = channel.name.clone();
-                let channel_id_c = channel.id.clone();
-                let trace_id_c = trace_id.clone();
-
-                // ── 克隆扫描结果（闭包要 move 进流中）
-                let security_result_clone = security_result.clone();
-
-                // ── 核心：字节透传 + 旁路解析 ──────────────────
+                let pending = PendingLog::new(
+                    log,
+                    repo.clone(),
+                    security_result.findings.clone(),
+                    security_result.action.as_str().to_string(),
+                    start,
+                );
+                let guard = StreamLogGuard::new(pending);
                 let upstream_stream = resp.bytes_stream();
 
                 let passthrough_stream = async_stream::stream! {
                     tokio::pin!(upstream_stream);
-
-                    let mut usage_prompt: i64 = 0;
-                    let mut usage_completion: i64 = 0;
-                    let mut usage_total: i64 = 0;
+                    let mut aggregator = ChatStreamAggregator::new(&model);
                     let mut had_error = false;
 
-                    // 逐 chunk 透传
                     while let Some(chunk_result) = upstream_stream.next().await {
                         match chunk_result {
                             Ok(bytes) => {
-                                // 旁路解析 usage（不影响转发）
                                 if let Ok(text) = std::str::from_utf8(&bytes) {
                                     if let Some((p, c, t)) = parse_usage_from_chunk(text) {
-                                        usage_prompt = p;
-                                        usage_completion = c;
-                                        usage_total = t;
+                                        guard.update_tokens(p, c, t);
                                     }
+                                }
+                                let done = aggregator.push(&bytes);
+                                if done {
+                                    // 客户端看到 [DONE] 可能立即断开：先落库再转发。
+                                    let body = aggregator.final_response().map(|v| v.to_string());
+                                    guard.finalize(200, None, body).await;
+                                    guard.disarm();
+                                    yield Ok::<_, std::io::Error>(bytes);
+                                    break;
                                 }
                                 yield Ok::<_, std::io::Error>(bytes);
                             }
                             Err(e) => {
-                                // 流中断：补发错误 chunk + [DONE]，优雅收尾
                                 had_error = true;
+                                let msg = format!("Stream connection interrupted: {e}");
+                                guard.mark_error(msg.clone());
+                                let body = aggregator.final_response().map(|v| v.to_string());
+                                guard.finalize(502, Some(msg.clone()), body).await;
+                                guard.disarm();
                                 let err_chunk = format!(
-                                    "data: {{\"error\":{{\"message\":\"Stream connection interrupted: {}\",\"type\":\"server_error\"}}}}\n\n", e
+                                    "data: {{\"error\":{{\"message\":\"{}\",\"type\":\"server_error\"}}}}\n\n",
+                                    msg
                                 );
                                 yield Ok::<_, std::io::Error>(err_chunk.into_bytes().into());
                                 yield Ok::<_, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"));
@@ -602,60 +803,14 @@ async fn handle_stream(
                         }
                     }
 
-                    // ── 流结束后：统一写日志 + 扣配额 ──────────
-                    let log = RequestLog {
-                        id: utils::id::new_id(),
-                        seq: None,
-                        api_key_id: Some(api_key_id_c.clone()),
-                        api_key_name: Some(api_key_name_c),
-                        channel_id: Some(channel_id_c),
-                        channel_name: Some(channel_name_c),
-                        model: model_c.clone(),
-                        upstream_model: Some(model_c),
-                        mode: "chat".to_string(),
-                        status_code: if had_error { 502 } else { 200 },
-                        prompt_tokens: usage_prompt,
-                        completion_tokens: usage_completion,
-                        total_tokens: usage_total,
-                        duration_ms: start.elapsed().as_millis() as i64,
-                        error_message: if had_error {
-                            Some("Stream connection interrupted".to_string())
-                        } else {
-                            None
-                        },
-                        is_stream: 1,
-                        is_retry,
-                        created_at: utils::time::now_iso(),
-                        request_body: Some(request_body_c),
-                        forward_body: None,
-                        response_choices: None,
-                        trace_id: trace_id_c,
-                        risk_level: security_result_clone.risk_level.as_str().to_string(),
-                        risk_score: security_result_clone.risk_score as i64,
-                        risk_summary: if security_result_clone.summary.is_empty() {
-                            None
-                        } else {
-                            Some(security_result_clone.summary.clone())
-                        },
-                        security_action: security_result_clone.action.as_str().to_string(),
-                        sanitized: if security_result_clone.sanitized { 1 } else { 0 },
-                        blocked_reason: security_result_clone.blocked_reason.clone(),
-                    };
-                    let log_id = log.id.clone();
-                    let _ = repo_clone.create_log(&log).await;
-                    let _ = repo_clone
-                        .create_security_findings(
-                            &log_id,
-                            &security_result_clone.findings,
-                            security_result_clone.action.as_str(),
-                        )
-                        .await;
-                    if usage_total > 0 {
-                        let _ = repo_clone.increment_quota(&api_key_id_c, usage_total).await;
+                    if !had_error {
+                        // 上游自然结束但没看到 [DONE]：补一次落库（槽位为空时是 no-op）。
+                        let body = aggregator.final_response().map(|v| v.to_string());
+                        guard.finalize(200, None, body).await;
+                        guard.disarm();
                     }
                 };
 
-                // 返回 SSE 响应
                 return Response::builder()
                     .status(StatusCode::OK)
                     .header(header::CONTENT_TYPE, "text/event-stream")
@@ -665,19 +820,31 @@ async fn handle_stream(
                     .unwrap();
             }
             Err(e) => {
-                // 连接失败：记日志，尝试下一个渠道
-                last_error = Some(format!("{}: {}", channel.name, e));
+                let error = format!("{}: {}", channel.name, e);
+                last_error = Some(error.clone());
+                write_stream_failure(
+                    &repo,
+                    &api_key_id,
+                    &api_key_name,
+                    &session,
+                    "chat",
+                    &model,
+                    502,
+                    &error,
+                    Some(&channel),
+                    is_retry,
+                    Some(&request_body),
+                )
+                .await;
             }
         }
     }
 
-    // 所有渠道失败
     error_response(
         502,
         &format!("All stream channels failed: {:?}", last_error),
     )
 }
-
 // ---------- 多协议流式转换（Anthropic / Responses 共用骨架） ----------
 
 trait StreamConverter {
@@ -687,6 +854,10 @@ trait StreamConverter {
     /// 上游流中断时的收尾事件；默认等价于正常结束（Anthropic 等协议无需改动）。
     fn finish_error(&mut self, _message: &str) -> Vec<String> {
         self.finish()
+    }
+    /// 正常结束后导出最终响应对象，供日志落库（默认无）。
+    fn final_response(&mut self) -> Option<serde_json::Value> {
+        None
     }
 }
 
@@ -699,6 +870,9 @@ impl StreamConverter for AnthropicStreamConverter {
     }
     fn finish(&mut self) -> Vec<String> {
         AnthropicStreamConverter::finish(self)
+    }
+    fn final_response(&mut self) -> Option<serde_json::Value> {
+        AnthropicStreamConverter::final_response(self)
     }
 }
 
@@ -715,6 +889,9 @@ impl StreamConverter for ResponsesStreamConverter {
     fn finish_error(&mut self, message: &str) -> Vec<String> {
         ResponsesStreamConverter::finish_error(self, message)
     }
+    fn final_response(&mut self) -> Option<serde_json::Value> {
+        ResponsesStreamConverter::final_response(self)
+    }
 }
 
 async fn proxy_stream<C: StreamConverter + Send>(
@@ -727,6 +904,7 @@ async fn proxy_stream<C: StreamConverter + Send>(
     mode: &'static str,
 ) -> Response {
     let repo = auth.repo.clone();
+    let session = auth.session.clone();
 
     // 安全扫描（与非流式路径一致）
     let security_settings = security::get_security_settings(&shared.app);
@@ -746,7 +924,7 @@ async fn proxy_stream<C: StreamConverter + Send>(
         &disabled_builtin,
     );
     if matches!(security_result.action, SecurityAction::Block) {
-        let log = RequestLog {
+        let mut log = RequestLog {
             id: utils::id::new_id(),
             seq: None,
             api_key_id: Some(auth.api_key_id.clone()),
@@ -769,6 +947,14 @@ async fn proxy_stream<C: StreamConverter + Send>(
             forward_body: None,
             response_choices: None,
             trace_id: trace_id.clone(),
+            response_body: None,
+            session_key: None,
+            client_session_id: None,
+            session_source: "none".to_string(),
+            session_client: None,
+            session_title: None,
+            request_kind: "turn".to_string(),
+            history_len: None,
             risk_level: security_result.risk_level.as_str().to_string(),
             risk_score: security_result.risk_score as i64,
             risk_summary: Some(security_result.summary.clone()),
@@ -776,6 +962,7 @@ async fn proxy_stream<C: StreamConverter + Send>(
             sanitized: 0,
             blocked_reason: security_result.blocked_reason.clone(),
         };
+        session.apply(&mut log);
         let log_id = log.id.clone();
         let _ = repo.create_log(&log).await;
         let _ = repo
@@ -795,7 +982,22 @@ async fn proxy_stream<C: StreamConverter + Send>(
     };
     let selected_channels = Dispatcher::select_channels(&channels, &model);
     if selected_channels.is_empty() {
-        return error_response(503, &format!("No channel available for model: {}", model));
+        let message = format!("No channel available for model: {}", model);
+        write_stream_failure(
+            &repo,
+            &auth.api_key_id,
+            &auth.api_key_name,
+            &session,
+            mode,
+            &model,
+            503,
+            &message,
+            None,
+            false,
+            Some(&request_body),
+        )
+        .await;
+        return error_response(503, &message);
     }
 
     let (retry_enabled, retry_times) = proxy::get_retry_settings(&shared.app);
@@ -810,6 +1012,7 @@ async fn proxy_stream<C: StreamConverter + Send>(
     for (attempt, channel) in selected_channels.into_iter().take(max_attempts).enumerate() {
         let config = Dispatcher::channel_to_config(&channel);
         let adaptor = get_adaptor(&channel.channel_type);
+        let is_retry = attempt > 0;
         let request = ProxyRequest {
             model: model.clone(),
             body: openai_body.clone(),
@@ -821,30 +1024,89 @@ async fn proxy_stream<C: StreamConverter + Send>(
                 let status = resp.status();
                 if !status.is_success() {
                     let body_str = resp.text().await.unwrap_or_default();
-                    last_error = Some(format!("{}: {}", channel.name, body_str));
+                    let error = format!(
+                        "{}: {}",
+                        channel.name,
+                        body_str.chars().take(2000).collect::<String>()
+                    );
+                    last_error = Some(error.clone());
+                    write_stream_failure(
+                        &repo,
+                        &auth.api_key_id,
+                        &auth.api_key_name,
+                        &session,
+                        mode,
+                        &model,
+                        status.as_u16(),
+                        &error,
+                        Some(&channel),
+                        is_retry,
+                        Some(&request_body),
+                    )
+                    .await;
                     continue;
                 }
 
                 let start = Instant::now();
-                let is_retry = if attempt > 0 { 1 } else { 0 };
-
-                let repo_clone = repo.clone();
-                let api_key_id_c = auth.api_key_id.clone();
-                let api_key_name_c = auth.api_key_name.clone();
                 let model_c = model.clone();
-                let request_body_c = request_body.clone();
-                let channel_name_c = channel.name.clone();
-                let channel_id_c = channel.id.clone();
-                let trace_id_c = trace_id.clone();
-                let security_result_clone = security_result.clone();
+                let mut log = RequestLog {
+                    id: utils::id::new_id(),
+                    seq: None,
+                    api_key_id: Some(auth.api_key_id.clone()),
+                    api_key_name: Some(auth.api_key_name.clone()),
+                    channel_id: Some(channel.id.clone()),
+                    channel_name: Some(channel.name.clone()),
+                    model: model.clone(),
+                    upstream_model: Some(model.clone()),
+                    mode: mode.to_string(),
+                    status_code: 200,
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                    total_tokens: 0,
+                    duration_ms: 0,
+                    error_message: None,
+                    is_stream: 1,
+                    is_retry: if is_retry { 1 } else { 0 },
+                    created_at: utils::time::now_iso(),
+                    request_body: Some(request_body.clone()),
+                    forward_body: None,
+                    response_choices: None,
+                    trace_id: trace_id.clone(),
+                    response_body: None,
+                    session_key: None,
+                    client_session_id: None,
+                    session_source: "none".to_string(),
+                    session_client: None,
+                    session_title: None,
+                    request_kind: "turn".to_string(),
+                    history_len: None,
+                    risk_level: security_result.risk_level.as_str().to_string(),
+                    risk_score: security_result.risk_score as i64,
+                    risk_summary: if security_result.summary.is_empty() {
+                        None
+                    } else {
+                        Some(security_result.summary.clone())
+                    },
+                    security_action: security_result.action.as_str().to_string(),
+                    sanitized: if security_result.sanitized { 1 } else { 0 },
+                    blocked_reason: security_result.blocked_reason.clone(),
+                };
+                session.apply(&mut log);
 
+                let pending = PendingLog::new(
+                    log,
+                    repo.clone(),
+                    security_result.findings.clone(),
+                    security_result.action.as_str().to_string(),
+                    start,
+                );
+                let guard = StreamLogGuard::new(pending);
                 let upstream_stream = resp.bytes_stream();
 
                 let converted_stream = async_stream::stream! {
                     tokio::pin!(upstream_stream);
 
-                    // 先给客户端一个 SSE 注释，之后每 10 秒一次。上游首包较慢时，
-                    // 客户端不会因为长时间收不到字节而把连接判为断流。
+                    // 先给客户端一个 SSE 注释，之后每 10 秒一次。
                     yield Ok::<_, std::io::Error>(Bytes::from(": keep-alive\n\n"));
                     let mut keepalive =
                         tokio::time::interval(std::time::Duration::from_secs(10));
@@ -866,24 +1128,45 @@ async fn proxy_stream<C: StreamConverter + Send>(
                             chunk_result = upstream_stream.next() => {
                                 match chunk_result {
                                     Some(Ok(bytes)) => {
-                                        // 旁路解析 usage（不影响转换）
                                         if let Ok(text) = std::str::from_utf8(&bytes) {
                                             if let Some((p, c, t)) = protocol::parse_usage_from_sse_chunk(text) {
                                                 usage_prompt = p;
                                                 usage_completion = c;
                                                 usage_total = t;
+                                                guard.update_tokens(p, c, t);
                                             }
                                         }
+                                        let mut terminal_events = Vec::new();
+                                        let mut has_terminal = false;
                                         for ev in converter.push(&bytes) {
-                                            yield Ok::<_, std::io::Error>(Bytes::from(ev));
+                                            if ev.starts_with("event: response.completed")
+                                                || ev.starts_with("event: response.failed")
+                                                || ev.starts_with("event: message_stop")
+                                            {
+                                                has_terminal = true;
+                                                terminal_events.push(ev);
+                                            } else {
+                                                yield Ok::<_, std::io::Error>(Bytes::from(ev));
+                                            }
+                                        }
+                                        if has_terminal {
+                                            // 终止事件一旦发给客户端，Codex 可能立即断开；
+                                            // 必须先落库与扣配额，再发送终止事件。
+                                            let body = converter
+                                                .final_response()
+                                                .map(|value| value.to_string());
+                                            guard.finalize(200, None, body).await;
+                                            guard.disarm();
+                                            for ev in terminal_events {
+                                                yield Ok::<_, std::io::Error>(Bytes::from(ev));
+                                            }
+                                            return;
                                         }
                                     }
                                     Some(Err(e)) => {
                                         had_error = true;
                                         let msg = format!("Upstream stream interrupted: {e}");
-                                        for ev in converter.finish_error(&msg) {
-                                            yield Ok::<_, std::io::Error>(Bytes::from(ev));
-                                        }
+                                        guard.mark_error(msg.clone());
                                         stream_error = Some(msg);
                                         break;
                                     }
@@ -893,53 +1176,27 @@ async fn proxy_stream<C: StreamConverter + Send>(
                         }
                     }
 
-                    // 流结束：补尾事件
-                    for ev in converter.finish() {
-                        yield Ok::<_, std::io::Error>(Bytes::from(ev));
-                    }
-
-                    // 写日志 + 扣配额
-                    let log = RequestLog {
-                        id: utils::id::new_id(),
-                        seq: None,
-                        api_key_id: Some(api_key_id_c.clone()),
-                        api_key_name: Some(api_key_name_c),
-                        channel_id: Some(channel_id_c),
-                        channel_name: Some(channel_name_c),
-                        model: model_c.clone(),
-                        upstream_model: Some(model_c),
-                        mode: mode.to_string(),
-                        status_code: if had_error { 502 } else { 200 },
-                        prompt_tokens: usage_prompt,
-                        completion_tokens: usage_completion,
-                        total_tokens: usage_total,
-                        duration_ms: start.elapsed().as_millis() as i64,
-                        error_message: stream_error.clone(),
-                        is_stream: 1,
-                        is_retry,
-                        created_at: utils::time::now_iso(),
-                        request_body: Some(request_body_c),
-                        forward_body: None,
-                        response_choices: None,
-                        trace_id: trace_id_c,
-                        risk_level: security_result_clone.risk_level.as_str().to_string(),
-                        risk_score: security_result_clone.risk_score as i64,
-                        risk_summary: if security_result_clone.summary.is_empty() {
-                            None
-                        } else {
-                            Some(security_result_clone.summary.clone())
-                        },
-                        security_action: security_result_clone.action.as_str().to_string(),
-                        sanitized: if security_result_clone.sanitized { 1 } else { 0 },
-                        blocked_reason: security_result_clone.blocked_reason.clone(),
+                    let tail = if had_error {
+                        converter.finish_error(
+                            stream_error.as_deref().unwrap_or("upstream stream interrupted"),
+                        )
+                    } else {
+                        converter.finish()
                     };
-                    let log_id = log.id.clone();
-                    let _ = repo_clone.create_log(&log).await;
-                    let _ = repo_clone
-                        .create_security_findings(&log_id, &security_result_clone.findings, security_result_clone.action.as_str())
+                    let response_body = converter.final_response().map(|v| v.to_string());
+
+                    // 关键：先落库 + 扣配额，再发送终止事件。
+                    guard
+                        .finalize(
+                            if had_error { 502 } else { 200 },
+                            stream_error,
+                            response_body,
+                        )
                         .await;
-                    if usage_total > 0 {
-                        let _ = repo_clone.increment_quota(&api_key_id_c, usage_total).await;
+                    guard.disarm();
+
+                    for ev in tail {
+                        yield Ok::<_, std::io::Error>(Bytes::from(ev));
                     }
                 };
 
@@ -953,7 +1210,22 @@ async fn proxy_stream<C: StreamConverter + Send>(
                     .unwrap();
             }
             Err(e) => {
-                last_error = Some(format!("{}: {}", channel.name, e));
+                let error = format!("{}: {}", channel.name, e);
+                last_error = Some(error.clone());
+                write_stream_failure(
+                    &repo,
+                    &auth.api_key_id,
+                    &auth.api_key_name,
+                    &session,
+                    mode,
+                    &model,
+                    502,
+                    &error,
+                    Some(&channel),
+                    is_retry,
+                    Some(&request_body),
+                )
+                .await;
             }
         }
     }
@@ -963,7 +1235,6 @@ async fn proxy_stream<C: StreamConverter + Send>(
         &format!("All stream channels failed: {:?}", last_error),
     )
 }
-
 // ---------- /v1/messages (Anthropic Messages API) ----------
 
 pub async fn handle_messages(
@@ -996,26 +1267,44 @@ pub async fn handle_messages(
         .get("max_tokens")
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
+    let request_body_str = serde_json::to_string(&json).unwrap_or_default();
 
     // 鉴权 + 配额
-    let auth =
-        match authenticate_and_check_quota(&shared, &headers, &model, &openai_body, max_tokens)
-            .await
-        {
-            Ok(a) => a,
-            Err((code, msg)) => return anthropic_error_response(code, &msg),
-        };
+    let auth = match authenticate_and_check_quota(
+        &shared,
+        &headers,
+        &model,
+        &openai_body,
+        Protocol::Messages,
+        "messages",
+        &json,
+        Some(&request_body_str),
+        max_tokens,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err((code, msg)) => return anthropic_error_response(code, &msg),
+    };
 
     if let Some(effective) = quota::clamp_max_tokens(auth.quota.as_ref(), max_tokens) {
         openai_body["max_tokens"] = serde_json::json!(effective);
     }
 
-    let request_body_str = serde_json::to_string(&json).unwrap_or_default();
     let trace_id = protocol::extract_trace_id(&headers);
 
     if is_stream {
-        handle_messages_stream(shared, auth, openai_body, model, request_body_str, trace_id).await
+        handle_messages_stream(
+            shared,
+            auth,
+            openai_body,
+            model,
+            request_body_str,
+            trace_id,
+        )
+        .await
     } else {
+        let session = auth.session.clone();
         match proxy::handle_request(
             &auth.repo,
             &shared.app,
@@ -1026,11 +1315,18 @@ pub async fn handle_messages(
             Some(request_body_str),
             trace_id,
             "messages",
+            &session,
         )
         .await
         {
             Ok(result) => {
                 let anthropic_resp = protocol::openai_to_anthropic(&result.body, &model);
+                if let Ok(body) = serde_json::to_string(&anthropic_resp) {
+                    let _ = auth
+                        .repo
+                        .update_log_response_body(&result.log_id, &body)
+                        .await;
+                }
                 (
                     StatusCode::from_u16(result.status).unwrap_or(StatusCode::OK),
                     Json(anthropic_resp),
@@ -1094,26 +1390,36 @@ pub async fn handle_responses(
         .get("max_tokens")
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
+    let request_body_str = serde_json::to_string(&json).unwrap_or_default();
 
     // 鉴权 + 配额
-    let auth =
-        match authenticate_and_check_quota(&shared, &headers, &model, &openai_body, max_tokens)
-            .await
-        {
-            Ok(a) => a,
-            Err((code, msg)) => return error_response(code, &msg),
-        };
+    let auth = match authenticate_and_check_quota(
+        &shared,
+        &headers,
+        &model,
+        &openai_body,
+        Protocol::Responses,
+        "responses",
+        &json,
+        Some(&request_body_str),
+        max_tokens,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err((code, msg)) => return error_response(code, &msg),
+    };
 
     if let Some(effective) = quota::clamp_max_tokens(auth.quota.as_ref(), max_tokens) {
         openai_body["max_tokens"] = serde_json::json!(effective);
     }
 
-    let request_body_str = serde_json::to_string(&json).unwrap_or_default();
     let trace_id = protocol::extract_trace_id(&headers);
 
     if is_stream {
         handle_responses_stream(shared, auth, openai_body, model, request_body_str, trace_id).await
     } else {
+        let session = auth.session.clone();
         match proxy::handle_request(
             &auth.repo,
             &shared.app,
@@ -1124,11 +1430,18 @@ pub async fn handle_responses(
             Some(request_body_str),
             trace_id,
             "responses",
+            &session,
         )
         .await
         {
             Ok(result) => {
                 let responses_resp = protocol::openai_to_responses(&result.body, &model);
+                if let Ok(body) = serde_json::to_string(&responses_resp) {
+                    let _ = auth
+                        .repo
+                        .update_log_response_body(&result.log_id, &body)
+                        .await;
+                }
                 (
                     StatusCode::from_u16(result.status).unwrap_or(StatusCode::OK),
                     Json(responses_resp),

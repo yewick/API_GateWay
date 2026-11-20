@@ -62,6 +62,18 @@ pub struct RequestLog {
     // 多协议转换存储支持（007_response_choices / 008_trace_id）
     pub response_choices: Option<String>,
     pub trace_id: Option<String>,
+    // 日志详情与会话阅读（019_log_response_sessions.sql）
+    /// 最终返回给客户端的协议响应 JSON（流式由转换器导出）。
+    pub response_body: Option<String>,
+    /// 会话归并键（客户端 session id 的命名空间哈希，或请求体前缀指纹）。
+    pub session_key: Option<String>,
+    pub client_session_id: Option<String>,
+    pub session_source: String,
+    pub session_client: Option<String>,
+    pub session_title: Option<String>,
+    /// turn / auxiliary / retry / unknown
+    pub request_kind: String,
+    pub history_len: Option<i64>,
     // 安全审计字段（003_security_audit.sql 添加）
     pub risk_level: String,
     pub risk_score: i64,
@@ -100,6 +112,59 @@ pub struct LogModeStats {
     pub mode: String,
     pub requests: i64,
     pub tokens: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogSessionSummary {
+    pub session_key: String,
+    pub session_title: Option<String>,
+    pub session_client: Option<String>,
+    pub models: Vec<String>,
+    pub first_at: String,
+    pub last_at: String,
+    pub request_count: i64,
+    pub turn_count: i64,
+    pub total_tokens: i64,
+    pub last_status_code: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogSessionEntry {
+    pub id: String,
+    pub seq: Option<i64>,
+    pub created_at: String,
+    pub model: String,
+    pub mode: String,
+    pub status_code: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub total_tokens: i64,
+    pub duration_ms: i64,
+    pub is_retry: i64,
+    pub request_kind: String,
+    pub history_len: Option<i64>,
+    pub session_title: Option<String>,
+    /// 仅主快照请求携带完整请求体，避免一次返回多份累积历史。
+    pub request_body: Option<String>,
+    pub response_body: Option<String>,
+    pub response_choices: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogSessionDetail {
+    pub summary: LogSessionSummary,
+    pub snapshot_id: Option<String>,
+    pub auxiliary_count: i64,
+    pub logs: Vec<LogSessionEntry>,
+}
+
+/// 历史日志补算会话字段时的最小行。
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct LogBackfillRow {
+    pub id: String,
+    pub request_body: String,
+    pub mode: String,
+    pub api_key_id: Option<String>,
 }
 
 pub fn now_iso() -> String {

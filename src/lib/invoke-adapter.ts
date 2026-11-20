@@ -45,6 +45,8 @@ export const REAL_COMMANDS = new Set<string>([
   "delete_log",
   "get_log_stats",
   "get_mode_stats",
+  "get_log_sessions",
+  "get_log_session",
   // 仪表盘
   "get_dashboard_stats",
   // 设置
@@ -197,6 +199,7 @@ const emptyFallback = (cmd: string): Promise<any> => {
     cmd === "get_logs" ||
     cmd === "get_log_stats" ||
     cmd === "get_mode_stats" ||
+    cmd === "get_log_sessions" ||
     cmd === "get_builtin_security_rules" ||
     cmd === "get_custom_security_rules" ||
     cmd === "get_log_findings" ||
@@ -213,6 +216,7 @@ const emptyFallback = (cmd: string): Promise<any> => {
   if (
     cmd === "get_channel" ||
     cmd === "get_log" ||
+    cmd === "get_log_session" ||
     cmd === "get_knowledge_base" ||
     cmd === "get_kb_document" ||
     cmd === "get_kb_document_content" ||

@@ -15,6 +15,7 @@ use crate::core::dispatcher::Dispatcher;
 use crate::core::proxy;
 use crate::db::models::{ApiKey, Channel};
 use crate::db::repository::Repository;
+use crate::server::session_identity::SessionMeta;
 
 use super::embedder;
 use super::models::*;
@@ -332,9 +333,20 @@ async fn chat_completion(
 
     // 经代理转发（安全扫描 + 渠道调度 + 重试 + 配额 + 日志），mode="rag"
     let body_str = serde_json::to_string(&body).unwrap_or_default();
-    let result = proxy::handle_request(db, app, &api_key.id, &api_key.name, body, false, Some(body_str), None, "rag")
-        .await
-        .map_err(|(code, msg)| format!("RAG 调用失败（{code}）：{msg}"))?;
+    let result = proxy::handle_request(
+        db,
+        app,
+        &api_key.id,
+        &api_key.name,
+        body,
+        false,
+        Some(body_str),
+        None,
+        "rag",
+        &SessionMeta::none(),
+    )
+    .await
+    .map_err(|(code, msg)| format!("RAG 调用失败（{code}）：{msg}"))?;
 
     if !(200..300).contains(&result.status) {
         return Err(format!("RAG 上游返回 {}: {}", result.status, result.body));

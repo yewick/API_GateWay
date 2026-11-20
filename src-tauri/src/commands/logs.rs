@@ -90,6 +90,60 @@ pub async fn get_mode_stats(
         .map_err(|e| e.to_string())
 }
 
+#[derive(Debug, Deserialize)]
+pub struct GetSessionsInput {
+    pub keyword: Option<String>,
+    pub client: Option<String>,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+    pub page: Option<i64>,
+    pub page_size: Option<i64>,
+}
+
+#[tauri::command]
+pub async fn get_log_sessions(
+    input: GetSessionsInput,
+    state: tauri::State<'_, std::sync::Arc<AppState>>,
+) -> Result<Vec<LogSessionSummary>, String> {
+    let repo = Repository::new(state.db.pool.clone());
+    let page = input.page.unwrap_or(1).max(1);
+    let page_size = input.page_size.unwrap_or(20).min(100);
+    let offset = (page - 1) * page_size;
+    repo.search_log_sessions(
+        input.keyword.as_deref(),
+        input.client.as_deref(),
+        input.start_date.as_deref(),
+        input.end_date.as_deref(),
+        page_size,
+        offset,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_log_session(
+    session_key: String,
+    state: tauri::State<'_, std::sync::Arc<AppState>>,
+) -> Result<LogSessionDetail, String> {
+    let repo = Repository::new(state.db.pool.clone());
+    let summary = repo
+        .get_log_session_summary(&session_key)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "会话不存在".to_string())?;
+    let (snapshot_id, auxiliary_count, logs) = repo
+        .get_log_session_entries(&session_key)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(LogSessionDetail {
+        summary,
+        snapshot_id,
+        auxiliary_count,
+        logs,
+    })
+}
+
 #[tauri::command]
 pub async fn get_log_findings(
     log_id: String,

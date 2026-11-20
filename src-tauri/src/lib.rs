@@ -87,6 +87,8 @@ pub fn run() {
             commands::logs::get_logs,
             commands::logs::get_log,
             commands::logs::delete_log,
+            commands::logs::get_log_sessions,
+            commands::logs::get_log_session,
             commands::logs::get_log_stats,
             commands::logs::get_mode_stats,
             commands::logs::get_log_findings,
@@ -183,6 +185,13 @@ pub fn run() {
                     )
                     .await;
                     *reconcile_state.reconcile_report.write().await = Some(report);
+                });
+
+                // 历史日志会话字段补算（分批、幂等、不阻塞启动）。
+                let backfill_repo =
+                    std::sync::Arc::new(db::repository::Repository::new(state.db.pool.clone()));
+                tauri::async_runtime::spawn(async move {
+                    server::session_backfill::backfill_sessions(backfill_repo).await;
                 });
 
                 Ok::<(), tauri::Error>(())

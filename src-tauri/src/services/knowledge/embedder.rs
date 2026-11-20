@@ -122,6 +122,14 @@ pub async fn embed(
                         security_action: "none".to_string(),
                         sanitized: 0,
                         blocked_reason: None,
+                        response_body: None,
+                        session_key: None,
+                        client_session_id: None,
+                        session_source: "none".to_string(),
+                        session_client: None,
+                        session_title: None,
+                        request_kind: "turn".to_string(),
+                        history_len: None,
                     };
                     let _ = repo.create_log(&log).await;
                     if total > 0 {

@@ -41,6 +41,8 @@ pub struct ResponsesStreamConverter {
     next_output_index: usize,
     input_tokens: u64,
     output_tokens: u64,
+    /// 正常完成时的最终响应对象（与 `response.completed` 事件中的 response 一致）。
+    final_response: Option<Value>,
 }
 
 impl ResponsesStreamConverter {
@@ -59,7 +61,13 @@ impl ResponsesStreamConverter {
             next_output_index: 0,
             input_tokens: 0,
             output_tokens: 0,
+            final_response: None,
         }
+    }
+
+    /// 供日志层读取：正常结束后返回与 `response.completed` 一致的响应对象。
+    pub fn final_response(&self) -> Option<Value> {
+        self.final_response.clone()
     }
 
     pub fn push(&mut self, bytes: &[u8]) -> Vec<String> {
@@ -113,6 +121,7 @@ impl ResponsesStreamConverter {
         self.finished = true;
         // 丢弃不完整的残余行，避免误解析出 finish_reason 而走成功收尾。
         self.buffer.clear();
+        self.final_response = None;
 
         let ev = json!({
             "type": "response.failed",
@@ -412,23 +421,26 @@ impl ResponsesStreamConverter {
             .map(|(_, item)| item)
             .collect();
 
+        let response = json!({
+            "id": self.response_id,
+            "object": "response",
+            "status": "completed",
+            "model": self.model,
+            "output": output,
+            "finish_reason": finish_reason,
+            "usage": {
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
+                "total_tokens": self.input_tokens + self.output_tokens
+            }
+        });
+        self.final_response = Some(response.clone());
+
         out.push(self.event(
             "response.completed",
             &json!({
                 "type": "response.completed",
-                "response": {
-                    "id": self.response_id,
-                    "object": "response",
-                    "status": "completed",
-                    "model": self.model,
-                    "output": output,
-                    "finish_reason": finish_reason,
-                    "usage": {
-                        "input_tokens": self.input_tokens,
-                        "output_tokens": self.output_tokens,
-                        "total_tokens": self.input_tokens + self.output_tokens
-                    }
-                }
+                "response": response
             }),
         ));
     }
@@ -494,6 +506,28 @@ mod tests {
         assert!(joined.contains("\"name\":\"search\""));
         assert!(joined.contains("\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\""));
         assert!(joined.contains("event: response.completed"));
+    }
+
+    #[test]
+    fn test_final_response_matches_completed_event() {
+        let mut c = ResponsesStreamConverter::new("gpt-5");
+        let mut events = c
+            .push(b"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":null}]}\n")
+            .join("");
+        events.push_str(
+            &c.push(
+                b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"search\",\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n",
+            )
+            .join(""),
+        );
+        events.push_str(&c.finish().join(""));
+        let body = c.final_response().expect("final response");
+        assert_eq!(body["status"], "completed");
+        assert_eq!(body["output"][0]["type"], "message");
+        assert_eq!(body["output"][0]["content"][0]["text"], "Hi");
+        assert_eq!(body["output"][1]["type"], "function_call");
+        assert_eq!(body["output"][1]["arguments"], "{\"q\":\"x\"}");
+        assert!(events.contains("event: response.completed"));
     }
 
     #[test]
