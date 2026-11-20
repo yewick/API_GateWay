@@ -1,6 +1,6 @@
 [package]
 name = "yeapi"
-version = "0.1.6"
+version = "0.2.0"
 description = "YeAPi - Local LLM API Gateway"
 authors = ["xiaofuge"]
 edition = "2021"

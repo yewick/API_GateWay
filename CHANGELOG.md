@@ -4,10 +4,17 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [0.2.0] - 2026-11-20
 
 ### Added
 
+- **客户端接入页改版**：参考 cc-switch 的列表式布局，页面顶部展示「当前接入」与「路由服务 · 运行中」状态条；接入目标拆为 Codex CLI、Claude Code CLI、Claude Desktop 三张卡片，支持搜索、测试连接、编辑、立即修复、复制网关地址与打开配置目录。编辑改为弹窗，已有接入默认复用原密钥；Claude 的 CLI 与桌面端可分别断开，互不影响另一个目标。选择已有密钥时，模型下拉只显示该密钥允许的模型；打开编辑时不再把已下线的旧模型预填为自定义模型，选择不可用模型会直接提示并禁用接入。
+- **客户端接入启动自检（开箱即用）**：应用启动、网关重启与渠道变更后自动检查客户端配置，只在「配置仍由 YeAPI 持有」时幂等修复——端口/地址变化自动改写 Codex、Claude Code 与桌面端的 base_url，Codex 模型目录缺失或过期时自动重建，向导新建的托管密钥丢失/过期时自动轮换并重写配置；在密钥页主动删除的 Key 会留下墓碑，不会被自动复活。检测到 cc-switch 等外部工具改写配置时只提示，不自动覆盖，需点「重新接入」手动接管（先备份）。
+- **网关状态可见**：新增 `server_status` 命令与 `server-status-changed` 事件；绑定失败不再静默，页面顶部会显示错误与「重试」。网关改为先完成绑定再启动、优雅停止后重启，并加入单实例插件避免双开抢端口。
+- **常驻提示**：首次接入后提示一次「关闭到托盘 / 开机自启」，默认不勾选、可在设置中调整；新增「设置 → 通用设置 → 客户端接入 → 启动时自动修复」开关。
+- **Claude Fable 档位**：Claude Code CLI 增加 `ANTHROPIC_DEFAULT_FABLE_MODEL` / `_NAME` 映射，`/model` 切换到 Fable 时会使用配置的真实模型；桌面端 `claude-fable-5` 路由也改为优先使用 Fable 映射（留空跟随主模型）。旧接入记录缺少该字段时自动回退主模型。
+- **客户端接入向导（Codex）**：新增「客户端接入」页面，可新建 / 选择 YeAPI 密钥并一键写入 `~/.codex/config.toml`（专用 `yeapi` provider、`responses` 协议、`experimental_bearer_token`），无需登录 OpenAI 账号。支持配置预览、连接测试、断开恢复与首次写入前备份；不修改 `auth.json`，并按本机 ChatGPT 登录态自动设置 `requires_openai_auth`。接入前校验模型是否命中启用渠道，并生成 `yeapi-model-catalog.json` 供 Codex 模型菜单使用。
+- **客户端接入向导（Claude Code）**：在「客户端接入」页新增 Claude Code 标签，可同时接入 Claude Code CLI 与 Claude 桌面端。CLI 侧增量维护 `~/.claude/settings.json` 的 `env`（`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`、`ANTHROPIC_MODEL` 及 Opus / Sonnet / Haiku / Fable 别名），保留其余设置与键序；桌面端侧新建并切换名为 `YeAPI` 的第三方推理档案，断开时恢复原档案。支持配置预览、Anthropic `/v1/messages` 连接测试、断开恢复与首次写入前备份。
 - **日志详情分区与会话阅读**：日志详情改为「概览 / 问答 / 工具调用 / 执行过程 / 原始 JSON」五个 Tab，跨 Chat / Messages / Responses 协议解析用户问题、助手回答、工具调用与结果；原始请求体、最终响应体、脱敏转发体与 response_choices 仍完整保留。日志页新增「会话」Tab，按客户端会话 ID 归并多次累积快照请求，按轮展示对话、折叠执行过程、提供轮次目录，并把标题生成、suggestion、CLAUDE.md 等辅助请求单独折叠。
 - **请求日志保存最终响应体**：非流式保存最终客户端协议响应；流式由转换器导出完整响应（Responses `output`、Anthropic `message`、Chat 聚合 `completion`）。日志写入 `response_body`，并新增 `session_key / client_session_id / session_source / session_client / session_title / request_kind / history_len` 字段；历史日志会在启动后分批补算会话身份。
 
@@ -15,15 +22,6 @@
 
 - **修复 Codex 流式请求日志/配额丢失**：`response.completed` / `message_stop` / `[DONE]` 之前先写日志、扣配额，再发送终止事件；客户端收到终止事件立即断开也能留下记录。新增 Drop 守护，客户端中途断开补写 499 日志；无渠道、上游非 2xx、连接失败也会写入失败日志。
 - 修复鉴权/配额失败日志统一被标记为 `chat` 且丢失原始会话字段的问题，现在保留实际协议与会话信息。
-- **Claude Fable 档位**：Claude Code CLI 增加 `ANTHROPIC_DEFAULT_FABLE_MODEL` / `_NAME` 映射，`/model` 切换到 Fable 时会使用配置的真实模型；桌面端 `claude-fable-5` 路由也改为优先使用 Fable 映射（留空跟随主模型）。旧接入记录缺少该字段时自动回退主模型。
-- **客户端接入启动自检（开箱即用）**：应用启动、网关重启与渠道变更后自动检查客户端配置，只在「配置仍由 YeAPI 持有」时幂等修复——端口/地址变化自动改写 Codex、Claude Code 与桌面端的 base_url，Codex 模型目录缺失或过期时自动重建，向导新建的托管密钥丢失/过期时自动轮换并重写配置；在密钥页主动删除的 Key 会留下墓碑，不会被自动复活。检测到 cc-switch 等外部工具改写配置时只提示，不自动覆盖，需点「重新接入」手动接管（先备份）。
-- **网关状态可见**：新增 `server_status` 命令与 `server-status-changed` 事件；绑定失败不再静默，页面顶部会显示错误与「重试」。网关改为先完成绑定再启动、优雅停止后重启，并加入单实例插件避免双开抢端口。
-- **常驻提示**：首次接入后提示一次「关闭到托盘 / 开机自启」，默认不勾选、可在设置中调整；新增「设置 → 通用设置 → 客户端接入 → 启动时自动修复」开关。
-- **客户端接入向导（Codex）**：新增「客户端接入」页面，可新建 / 选择 YeAPI 密钥并一键写入 `~/.codex/config.toml`（专用 `yeapi` provider、`responses` 协议、`experimental_bearer_token`），无需登录 OpenAI 账号。支持配置预览、连接测试、断开恢复与首次写入前备份；不修改 `auth.json`，并按本机 ChatGPT 登录态自动设置 `requires_openai_auth`。接入前校验模型是否命中启用渠道，并生成 `yeapi-model-catalog.json` 供 Codex 模型菜单使用。
-- **客户端接入向导（Claude Code）**：在「客户端接入」页新增 Claude Code 标签，可同时接入 Claude Code CLI 与 Claude 桌面端。CLI 侧增量维护 `~/.claude/settings.json` 的 `env`（`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`、`ANTHROPIC_MODEL` 及 Opus / Sonnet / Haiku 别名），保留其余设置与键序；桌面端侧新建并切换名为 `YeAPI` 的第三方推理档案，断开时恢复原档案。支持配置预览、Anthropic `/v1/messages` 连接测试、断开恢复与首次写入前备份。
-
-### Fixed
-
 - 修复安全扫描误报：`tool.remote_script_exec` 改为检测真正的 `curl|wget … | bash/sh` 管道执行（排除 `||`），`network.tracking_pixel` 只匹配真实 1x1 图片 / 追踪 URL，`noreply@` 等系统邮箱不计入个人信息，Info 级重复发现每个规则最多保留 3 条；`off` / `audit` 模式不再被 `block_on_critical` 或自定义阻断规则升级为阻断。
 - 修复凭证检测漏报：密钥样式字符串紧跟在中文等非分隔文本之后（如「我的apikey是sk-…」）时不会被识别；改为边界感知的全文扫描，覆盖 `sk-` / `sk-ant-` / `Bearer` / JWT 等前缀。
 - 修复限额密钥在 Claude Code 等客户端下因单次 `max_tokens` 较大被误判为配额不足的问题：配额预检改为「估算请求输入 + 输出预算封顶」，把上游 `max_tokens` 收敛到剩余预算，仅在余额不足以覆盖输入与最小输出时返回 429；同时为 `/v1/messages`、`/v1/responses` 的拒绝路径补写失败日志。
